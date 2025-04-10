@@ -81,9 +81,9 @@ def get_mozilla_data(country_name, end_time=1722349603, start_time=None):
     region_agg_df = transform_list_data_and_add_city_count(region_df_string_cols, region_agg_df)
     country_agg_df = transform_list_data_and_add_city_count(country_df_string_cols, country_agg_df)
 
-    # mozilla_with_ioda_id_df.to_csv('./data/merged.csv')
-    # region_agg_df.to_csv('./data/test_region.csv')
-    # country_agg_df.to_csv('./data/test_country.csv')
+    mozilla_with_ioda_id_df.to_csv('./data/merged.csv')
+    region_agg_df.to_csv('./data/test_region.csv')
+    country_agg_df.to_csv('./data/test_country.csv')
     # todo: add list of value for each constituent city at each timestamp.
 
     return region_agg_df, country_agg_df
@@ -93,9 +93,8 @@ def transform_list_data_and_add_city_count(cols, df):
     df['city_count'] = df['city'].apply(lambda city_list: len(city_list))
     for col in cols:
         df[col] = df[col].apply(lambda col_data: ", ".join(map(str, col_data)))
-        print(df[col].iloc[5])
     return df
 
 
 if __name__ == "__main__":
-    get_mozilla_data('PK')
+    get_mozilla_data('US')
