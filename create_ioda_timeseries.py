@@ -3,9 +3,9 @@ import datetime
 import pandas as pd
 from google.cloud import bigquery
 
-from constants import GCP_PROJECT_ID, NE_MAP_PATH
+from constants import GCP_PROJECT_ID, NE_MAP_PATH, MOZILLA_BQ_TABLE_NAME
 
-LOOKBACK_PERIOD = 1  # in days
+DEFAULT_LOOKBACK_PERIOD = 1  # in days
 
 
 def get_mozilla_data(country_name=None, end_time=datetime.datetime.now(), start_time=None):
@@ -15,7 +15,7 @@ def get_mozilla_data(country_name=None, end_time=datetime.datetime.now(), start_
     if start_time:
         start_time = datetime.datetime.fromtimestamp(start_time)
     else:
-        start_time = end_time - datetime.timedelta(days=LOOKBACK_PERIOD)
+        start_time = end_time - datetime.timedelta(days=DEFAULT_LOOKBACK_PERIOD)
 
     end_time = end_time.astimezone(datetime.timezone.utc)
     start_time = start_time.astimezone(datetime.timezone.utc)
@@ -26,7 +26,7 @@ def get_mozilla_data(country_name=None, end_time=datetime.datetime.now(), start_
     if country_name:
         query = f"""
           SELECT *
-          FROM `moz-fx-data-shared-prod.internet_outages.global_outages_v2`
+          FROM {MOZILLA_BQ_TABLE_NAME}
           WHERE country = '{country_name}'
           AND datetime BETWEEN TIMESTAMP('{start_time_fmt}')
                            AND TIMESTAMP('{end_time_fmt}')
@@ -34,7 +34,7 @@ def get_mozilla_data(country_name=None, end_time=datetime.datetime.now(), start_
     else:
         query = f"""
           SELECT *
-          FROM `moz-fx-data-shared-prod.internet_outages.global_outages_v2`
+          FROM {MOZILLA_BQ_TABLE_NAME}
           WHERE datetime BETWEEN TIMESTAMP('{start_time_fmt}')
                           AND TIMESTAMP('{end_time_fmt}')
          """
@@ -52,6 +52,16 @@ def get_mozilla_data(country_name=None, end_time=datetime.datetime.now(), start_
     mozilla_with_ioda_id_df = mozilla_df.merge(ne_mapping,
                                                on=['country', 'geo_subdivision1', 'geo_subdivision2', 'city'])
 
+    merge_on_mozilla = mozilla_df.merge(ne_mapping,
+                              on=['country', 'geo_subdivision1', 'geo_subdivision2', 'city'],
+                              how='left',
+                              indicator=True)
+
+    unmatched = merge_on_mozilla[merge_on_mozilla['_merge'] == 'left_only']
+
+    mozilla_with_ioda_id_df.to_csv('./data/merged.csv')
+    unmatched.to_csv('./data/unmatched.csv')
+
     # assert len(mozilla_df) == len(mozilla_with_ioda_id_df), \
     #     (f"Length mismatch: Original Mozilla DataFrame has {len(mozilla_df)} rows, "
     #      f"DataFrame of Mozilla data merged with IODA ids has {len(mozilla_with_ioda_id_df)} rows")
@@ -63,9 +73,7 @@ def get_mozilla_data(country_name=None, end_time=datetime.datetime.now(), start_
         "city": lambda city: list(set(city))
     }).reset_index()
 
-    print(region_agg_df)
-
-    print(f'Total no. of region-aggregated datapoints in country {country_name}: {len(region_agg_df)}')
+    print(f'Total no. of region-aggregated datapoints: {len(region_agg_df)}')
     print(f'IODA regions present in data: {region_agg_df.ioda_id.unique()}')
 
     country_agg_df = mozilla_with_ioda_id_df.groupby(["datetime", "country"]).agg({
@@ -74,13 +82,15 @@ def get_mozilla_data(country_name=None, end_time=datetime.datetime.now(), start_
         "city": lambda city: list(set(city)),
     }).reset_index()
 
+    print(f'Total no. of country-aggregated datapoints: {len(country_agg_df)}')
+    print(f'Countries present in data: {country_agg_df.country.unique()}')
+
     # unpack lists and transform into string data for columns with list data
     # in addition, count number of cities in aggregated datapoint
     city_col_debugging = ['city']
     region_agg_df = transform_list_data_and_add_city_count(city_col_debugging, region_agg_df)
     country_agg_df = transform_list_data_and_add_city_count(city_col_debugging, country_agg_df)
 
-    mozilla_with_ioda_id_df.to_csv('./data/merged.csv')
     region_agg_df.to_csv('./data/test_region.csv')
     country_agg_df.to_csv('./data/test_country.csv')
 
@@ -95,4 +105,4 @@ def transform_list_data_and_add_city_count(cols, df):
 
 
 if __name__ == "__main__":
-    get_mozilla_data('US')
+    get_mozilla_data()
