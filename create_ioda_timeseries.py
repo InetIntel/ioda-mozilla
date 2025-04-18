@@ -39,6 +39,8 @@ def get_mozilla_data(country_name=None, end_time=datetime.datetime.now(), start_
                           AND TIMESTAMP('{end_time_fmt}')
          """
 
+    print(query)
+
     mozilla_df = None
     ne_mapping = pd.read_csv(NE_MAP_PATH)
 
@@ -52,19 +54,20 @@ def get_mozilla_data(country_name=None, end_time=datetime.datetime.now(), start_
     mozilla_with_ioda_id_df = mozilla_df.merge(ne_mapping,
                                                on=['country', 'geo_subdivision1', 'geo_subdivision2', 'city'])
 
-    merge_on_mozilla = mozilla_df.merge(ne_mapping,
-                              on=['country', 'geo_subdivision1', 'geo_subdivision2', 'city'],
-                              how='left',
-                              indicator=True)
+    if len(mozilla_df) != len(mozilla_with_ioda_id_df):
+        merge_on_mozilla = mozilla_df.merge(ne_mapping,
+                                  on=['country', 'geo_subdivision1', 'geo_subdivision2', 'city'],
+                                  how='left',
+                                  indicator=True)
 
-    unmatched = merge_on_mozilla[merge_on_mozilla['_merge'] == 'left_only']
+        unmatched = merge_on_mozilla[merge_on_mozilla['_merge'] == 'left_only']
+        unmatched.to_csv('./data/unmatched.csv')
 
     mozilla_with_ioda_id_df.to_csv('./data/merged.csv')
-    unmatched.to_csv('./data/unmatched.csv')
 
-    # assert len(mozilla_df) == len(mozilla_with_ioda_id_df), \
-    #     (f"Length mismatch: Original Mozilla DataFrame has {len(mozilla_df)} rows, "
-    #      f"DataFrame of Mozilla data merged with IODA ids has {len(mozilla_with_ioda_id_df)} rows")
+    assert len(mozilla_df) == len(mozilla_with_ioda_id_df), \
+        (f"Length mismatch: Original Mozilla DataFrame has {len(mozilla_df)} rows, "
+         f"DataFrame of Mozilla data merged with IODA ids has {len(mozilla_with_ioda_id_df)} rows")
 
     region_agg_df = mozilla_with_ioda_id_df.groupby(["ioda_id", "datetime"]).agg({
         "country": "first",
