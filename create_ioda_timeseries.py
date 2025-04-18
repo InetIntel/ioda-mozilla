@@ -5,7 +5,7 @@ from google.cloud import bigquery
 
 from constants import GCP_PROJECT_ID, NE_MAP_PATH, MOZILLA_BQ_TABLE_NAME
 
-DEFAULT_LOOKBACK_PERIOD = 1  # in days
+DEFAULT_LOOKBACK_PERIOD = 2  # in days
 
 
 def get_mozilla_data(country_name=None, end_time=datetime.datetime.now(), start_time=None):
