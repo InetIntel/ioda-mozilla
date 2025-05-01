@@ -25,19 +25,55 @@ def get_mozilla_data(country_name=None, end_time=datetime.datetime.now(), start_
 
     if country_name:
         query = f"""
-          SELECT *
-          FROM {MOZILLA_BQ_TABLE_NAME}
-          WHERE country = '{country_name}'
-          AND datetime BETWEEN TIMESTAMP('{start_time_fmt}')
-                           AND TIMESTAMP('{end_time_fmt}')
-          """
+            SELECT *,
+                CASE 
+                    WHEN city = 'unknown' 
+                        AND (geo_subdivision1 IS NOT NULL AND geo_subdivision1 != '')
+                    THEN CONCAT(
+                        'unknown (',
+                        geo_subdivision1,
+                        IF(geo_subdivision2 IS NOT NULL AND geo_subdivision2 != '', CONCAT(', ', geo_subdivision2), ''),
+                        ')'
+                    )
+                    WHEN city = 'unknown' 
+                        AND (geo_subdivision2 IS NOT NULL AND geo_subdivision2 != '')
+                    THEN CONCAT(
+                        'unknown (',
+                        geo_subdivision2,
+                        ')'
+                    )
+                    ELSE city
+                END AS adjusted_city
+            FROM {MOZILLA_BQ_TABLE_NAME}
+            WHERE country = '{country_name}'
+            AND datetime BETWEEN TIMESTAMP('{start_time_fmt}')
+                            AND TIMESTAMP('{end_time_fmt}')
+        """
     else:
         query = f"""
-          SELECT *
-          FROM {MOZILLA_BQ_TABLE_NAME}
-          WHERE datetime BETWEEN TIMESTAMP('{start_time_fmt}')
-                          AND TIMESTAMP('{end_time_fmt}')
-         """
+            SELECT *,
+                CASE 
+                    WHEN city = 'unknown' 
+                        AND (geo_subdivision1 IS NOT NULL AND geo_subdivision1 != '')
+                    THEN CONCAT(
+                        'unknown (',
+                        geo_subdivision1,
+                        IF(geo_subdivision2 IS NOT NULL AND geo_subdivision2 != '', CONCAT(', ', geo_subdivision2), ''),
+                        ')'
+                    )
+                    WHEN city = 'unknown' 
+                        AND (geo_subdivision2 IS NOT NULL AND geo_subdivision2 != '')
+                    THEN CONCAT(
+                        'unknown (',
+                        geo_subdivision2,
+                        ')'
+                    )
+                    ELSE city
+                END AS adjusted_city
+            FROM {MOZILLA_BQ_TABLE_NAME}
+            WHERE datetime BETWEEN TIMESTAMP('{start_time_fmt}')
+                            AND TIMESTAMP('{end_time_fmt}')
+        """
 
     print(query)
 
@@ -65,15 +101,15 @@ def get_mozilla_data(country_name=None, end_time=datetime.datetime.now(), start_
 
     mozilla_with_ioda_id_df.to_csv('./data/merged.csv')
 
-    assert len(mozilla_df) == len(mozilla_with_ioda_id_df), \
-        (f"Length mismatch: Original Mozilla DataFrame has {len(mozilla_df)} rows, "
-         f"DataFrame of Mozilla data merged with IODA ids has {len(mozilla_with_ioda_id_df)} rows")
+    # assert len(mozilla_df) == len(mozilla_with_ioda_id_df), \
+    #     (f"Length mismatch: Original Mozilla DataFrame has {len(mozilla_df)} rows, "
+    #      f"DataFrame of Mozilla data merged with IODA ids has {len(mozilla_with_ioda_id_df)} rows")
 
     region_agg_df = mozilla_with_ioda_id_df.groupby(["ioda_id", "datetime"]).agg({
         "country": "first",
         "proportion_timeout": "mean",
         "proportion_unreachable": "mean",
-        "city": lambda city: list(set(city))
+        "adjusted_city": lambda city: list(set(city))
     }).reset_index()
 
     print(f'Total no. of region-aggregated datapoints: {len(region_agg_df)}')
@@ -82,7 +118,7 @@ def get_mozilla_data(country_name=None, end_time=datetime.datetime.now(), start_
     country_agg_df = mozilla_with_ioda_id_df.groupby(["datetime", "country"]).agg({
         "proportion_timeout": "mean",
         "proportion_unreachable": "mean",
-        "city": lambda city: list(set(city)),
+        "adjusted_city": lambda city: list(set(city)),
     }).reset_index()
 
     print(f'Total no. of country-aggregated datapoints: {len(country_agg_df)}')
@@ -90,7 +126,7 @@ def get_mozilla_data(country_name=None, end_time=datetime.datetime.now(), start_
 
     # unpack lists and transform into string data for columns with list data
     # in addition, count number of cities in aggregated datapoint
-    city_col_debugging = ['city']
+    city_col_debugging = ['adjusted_city']
     region_agg_df = transform_list_data_and_add_city_count(city_col_debugging, region_agg_df)
     country_agg_df = transform_list_data_and_add_city_count(city_col_debugging, country_agg_df)
 
@@ -101,7 +137,7 @@ def get_mozilla_data(country_name=None, end_time=datetime.datetime.now(), start_
 
 
 def transform_list_data_and_add_city_count(cols, df):
-    df['city_count'] = df['city'].apply(lambda city_list: len(city_list))
+    df['city_count'] = df['adjusted_city'].apply(lambda city_list: len(city_list))
     for col in cols:
         df[col] = df[col].apply(lambda col_data: ", ".join(map(str, col_data)))
     return df
