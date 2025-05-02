@@ -1,10 +1,10 @@
 #!/bin/bash
 
-# Exit immediately on error
+# Exit on error
 set -e
 
-# Build the Docker image
-docker build -t mozilla-ioda .
+# # Build the Docker image
+# docker build -t mozilla-ioda .
 
 # Run the container with ADC credentials mounted
 docker run --rm \
