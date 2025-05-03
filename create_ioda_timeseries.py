@@ -25,7 +25,6 @@ def get_mozilla_data(country=None, region=None, end_time=datetime.datetime.now()
     end_time_fmt = end_time.strftime("%Y-%m-%d %H:%M:%S")
     start_time_fmt = start_time.strftime("%Y-%m-%d %H:%M:%S")
 
-    # TODO: directly query table with ioda id for performance improvements?
     if region in ne_mapping.ioda_id:
         country = ne_mapping.loc[region == ne_mapping.ioda_id, "country"].unique()[0]
     if country:
@@ -114,10 +113,8 @@ def get_mozilla_data(country=None, region=None, end_time=datetime.datetime.now()
     region_agg_df = mozilla_with_ioda_id_df
 
     if region:
-        # filter rows that correspond to query region id
         region_agg_df = region_agg_df[mozilla_with_ioda_id_df["ioda_id"] == region]
 
-    # group by datetime and query region id
     region_agg_df = region_agg_df.groupby(["ioda_id", "datetime"]).agg({
         "country": "first",
         "proportion_timeout": "mean",
@@ -156,5 +153,8 @@ def transform_list_data_and_add_city_count(cols, df):
 
 
 if __name__ == "__main__":
-    get_mozilla_data(region=4416)
+    # get_mozilla_data(country='NL', region=4416)
+    # get_mozilla_data(region=4416)
+    # get_mozilla_data(country='NL')
     # get_mozilla_data()
+    pass
