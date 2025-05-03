@@ -11,6 +11,10 @@ DEFAULT_LOOKBACK_PERIOD = 2  # in days
 def get_mozilla_data(country=None, region=None, end_time=datetime.datetime.now(), start_time=None):
     ne_mapping = pd.read_csv(NE_MAP_PATH)
 
+    # convert ioda_ids to ints. if not available, convert to NaN
+    ne_mapping.ioda_id = pd.to_numeric(ne_mapping.ioda_id, errors='coerce').astype('Int64')
+    print(ne_mapping)
+
     if not isinstance(end_time, datetime.datetime):
         # if end_time is passed in as unix timestamp
         end_time = datetime.datetime.fromtimestamp(end_time)
@@ -94,21 +98,24 @@ def get_mozilla_data(country=None, region=None, end_time=datetime.datetime.now()
     mozilla_with_ioda_id_df = mozilla_df.merge(ne_mapping,
                                                on=['country', 'geo_subdivision1', 'geo_subdivision2', 'city'])
 
-    if len(mozilla_df) != len(mozilla_with_ioda_id_df):
-        merge_on_mozilla = mozilla_df.merge(ne_mapping,
-                                  on=['country', 'geo_subdivision1', 'geo_subdivision2', 'city'],
-                                  how='left',
-                                  indicator=True)
-
-        unmatched = merge_on_mozilla[merge_on_mozilla['_merge'] == 'left_only']
-
-        # unmatched.to_csv('./data/unmatched.csv')
+    # # If you encounter an error in the following test due to length mismatch,
+    # # uncomment the following chunk to see which rows of data were not mapped properly.
+    # if len(mozilla_df) != len(mozilla_with_ioda_id_df):
+    #     merge_on_mozilla = mozilla_df.merge(ne_mapping,
+    #                               on=['country', 'geo_subdivision1', 'geo_subdivision2', 'city'],
+    #                               how='left',
+    #                               indicator=True)
+    #
+    #     unmatched = merge_on_mozilla[merge_on_mozilla['_merge'] == 'left_only']
+    #     unmatched.to_csv('./data/unmatched.csv')
 
     mozilla_with_ioda_id_df.to_csv('./data/merged.csv')
 
-    # assert len(mozilla_df) == len(mozilla_with_ioda_id_df), \
-    #     (f"Length mismatch: Original Mozilla DataFrame has {len(mozilla_df)} rows, "
-    #      f"DataFrame of Mozilla data merged with IODA ids has {len(mozilla_with_ioda_id_df)} rows")
+    assert len(mozilla_df) == len(mozilla_with_ioda_id_df), \
+        (f"Length mismatch: Original Mozilla DataFrame has {len(mozilla_df)} rows, "
+         f"DataFrame of Mozilla data merged with IODA ids has {len(mozilla_with_ioda_id_df)} rows. "
+         f"Uncomment lines 103-110 to understand which rows were not mapped properly. "
+         f"Otherwise, comment out lines 114-119 to continue without the unmapped rows. ")
 
     region_agg_df = mozilla_with_ioda_id_df
 
@@ -153,7 +160,7 @@ def transform_list_data_and_add_city_count(cols, df):
 
 
 if __name__ == "__main__":
-    # get_mozilla_data(country='NL', region=4416)
+    get_mozilla_data(country='NL', region=4416)
     # get_mozilla_data(region=4416)
     # get_mozilla_data(country='NL')
     # get_mozilla_data()

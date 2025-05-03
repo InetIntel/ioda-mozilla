@@ -109,3 +109,13 @@ The lookback period can be updated using the `DEFAULT_LOOKBACK_PERIOD` variable 
 ```
 python create_ioda_timeseries.py
 ``` 
+
+### Troubleshooting
+If you encounter a length mismatch error: 
+```
+ Length mismatch: Original Mozilla DataFrame has 13381 rows, DataFrame of Mozilla data merged with IODA ids has 13373 rows. Uncomment lines 103-110 to understand which rows were not mapped properly. Otherwise, comment out lines 114-119 to continue without the unmapped rows. 
+```
+
+- It is likely that some datapoints in the Mozilla data were not successfully mapped to the specified country/region due to missing IODA IDs in the NE mapping.
+- Uncomment the mentioned lines to obtain a CSV file of which datapoints were not mapped. This file can be found in: `data/unmmatched.csv`
+- Otherwise, comment out the specified lines (code for length mismatch test) to continue without the unmapped rows.
