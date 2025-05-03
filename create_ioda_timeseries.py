@@ -13,7 +13,6 @@ def get_mozilla_data(country=None, region=None, end_time=datetime.datetime.now()
 
     # convert ioda_ids to ints. if not available, convert to NaN
     ne_mapping.ioda_id = pd.to_numeric(ne_mapping.ioda_id, errors='coerce').astype('Int64')
-    print(ne_mapping)
 
     if not isinstance(end_time, datetime.datetime):
         # if end_time is passed in as unix timestamp
