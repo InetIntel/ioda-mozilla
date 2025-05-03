@@ -8,7 +8,12 @@ from constants import GCP_PROJECT_ID, NE_MAP_PATH, MOZILLA_BQ_TABLE_NAME
 DEFAULT_LOOKBACK_PERIOD = 2  # in days
 
 
-def get_mozilla_data(country_name=None, end_time=datetime.datetime.now(), start_time=None):
+def get_mozilla_data(country=None, region=None, end_time=datetime.datetime.now(), start_time=None):
+    ne_mapping = pd.read_csv(NE_MAP_PATH)
+
+    # convert ioda_ids to ints. if not available, convert to NaN
+    ne_mapping.ioda_id = pd.to_numeric(ne_mapping.ioda_id, errors='coerce').astype('Int64')
+
     if not isinstance(end_time, datetime.datetime):
         # if end_time is passed in as unix timestamp
         end_time = datetime.datetime.fromtimestamp(end_time)
@@ -23,7 +28,9 @@ def get_mozilla_data(country_name=None, end_time=datetime.datetime.now(), start_
     end_time_fmt = end_time.strftime("%Y-%m-%d %H:%M:%S")
     start_time_fmt = start_time.strftime("%Y-%m-%d %H:%M:%S")
 
-    if country_name:
+    if region in ne_mapping.ioda_id:
+        country = ne_mapping.loc[region == ne_mapping.ioda_id, "country"].unique()[0]
+    if country:
         query = f"""
             SELECT *,
                 CASE 
@@ -45,11 +52,12 @@ def get_mozilla_data(country_name=None, end_time=datetime.datetime.now(), start_
                     ELSE city
                 END AS adjusted_city
             FROM {MOZILLA_BQ_TABLE_NAME}
-            WHERE country = '{country_name}'
+            WHERE country = '{country}' 
             AND datetime BETWEEN TIMESTAMP('{start_time_fmt}')
                             AND TIMESTAMP('{end_time_fmt}')
         """
     else:
+        # no country name or region specified, return data from all countries and region for the specified timeframe.
         query = f"""
             SELECT *,
                 CASE 
@@ -78,7 +86,6 @@ def get_mozilla_data(country_name=None, end_time=datetime.datetime.now(), start_
     print(query)
 
     mozilla_df = None
-    ne_mapping = pd.read_csv(NE_MAP_PATH)
 
     try:
         client = bigquery.Client(project=GCP_PROJECT_ID)
@@ -90,22 +97,31 @@ def get_mozilla_data(country_name=None, end_time=datetime.datetime.now(), start_
     mozilla_with_ioda_id_df = mozilla_df.merge(ne_mapping,
                                                on=['country', 'geo_subdivision1', 'geo_subdivision2', 'city'])
 
-    if len(mozilla_df) != len(mozilla_with_ioda_id_df):
-        merge_on_mozilla = mozilla_df.merge(ne_mapping,
-                                  on=['country', 'geo_subdivision1', 'geo_subdivision2', 'city'],
-                                  how='left',
-                                  indicator=True)
-
-        unmatched = merge_on_mozilla[merge_on_mozilla['_merge'] == 'left_only']
-        unmatched.to_csv('./data/unmatched.csv')
+    # # If you encounter an error in the following test due to length mismatch,
+    # # uncomment the following chunk to see which rows of data were not mapped properly.
+    # if len(mozilla_df) != len(mozilla_with_ioda_id_df):
+    #     merge_on_mozilla = mozilla_df.merge(ne_mapping,
+    #                               on=['country', 'geo_subdivision1', 'geo_subdivision2', 'city'],
+    #                               how='left',
+    #                               indicator=True)
+    #
+    #     unmatched = merge_on_mozilla[merge_on_mozilla['_merge'] == 'left_only']
+    #     unmatched.to_csv('./data/unmatched.csv')
 
     mozilla_with_ioda_id_df.to_csv('./data/merged.csv')
 
-    # assert len(mozilla_df) == len(mozilla_with_ioda_id_df), \
-    #     (f"Length mismatch: Original Mozilla DataFrame has {len(mozilla_df)} rows, "
-    #      f"DataFrame of Mozilla data merged with IODA ids has {len(mozilla_with_ioda_id_df)} rows")
+    assert len(mozilla_df) == len(mozilla_with_ioda_id_df), \
+        (f"Length mismatch: Original Mozilla DataFrame has {len(mozilla_df)} rows, "
+         f"DataFrame of Mozilla data merged with IODA ids has {len(mozilla_with_ioda_id_df)} rows. "
+         f"Uncomment lines 103-110 to understand which rows were not mapped properly. "
+         f"Otherwise, comment out lines 114-119 to continue without the unmapped rows. ")
 
-    region_agg_df = mozilla_with_ioda_id_df.groupby(["ioda_id", "datetime"]).agg({
+    region_agg_df = mozilla_with_ioda_id_df
+
+    if region:
+        region_agg_df = region_agg_df[mozilla_with_ioda_id_df["ioda_id"] == region]
+
+    region_agg_df = region_agg_df.groupby(["ioda_id", "datetime"]).agg({
         "country": "first",
         "proportion_timeout": "mean",
         "proportion_unreachable": "mean",
@@ -120,7 +136,6 @@ def get_mozilla_data(country_name=None, end_time=datetime.datetime.now(), start_
         "proportion_unreachable": "mean",
         "adjusted_city": lambda city: list(set(city)),
     }).reset_index()
-
     print(f'Total no. of country-aggregated datapoints: {len(country_agg_df)}')
     print(f'Countries present in data: {country_agg_df.country.unique()}')
 
@@ -144,4 +159,8 @@ def transform_list_data_and_add_city_count(cols, df):
 
 
 if __name__ == "__main__":
-    get_mozilla_data()
+    get_mozilla_data(country='NL', region=4416)
+    # get_mozilla_data(region=4416)
+    # get_mozilla_data(country='NL')
+    # get_mozilla_data()
+    pass
