@@ -98,9 +98,9 @@ The lookback period can be updated using the `DEFAULT_LOOKBACK_PERIOD` variable 
 >   get_mozilla_data(region=4416)
 >   ``` 
 >   also yields the same data.
->* ```
->  get_mozilla_data(region='NL')
->  ``` 
+> * ```
+>   get_mozilla_data(region='NL')
+>   ``` 
 >   will yield NL country data, and region-aggregated data for all regions in NL.
 
 6. If neither `region` nor `country` are specified, all data from the specified timeframe is captured, and we obtain country-aggregated and region-aggregated.
