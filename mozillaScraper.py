@@ -3,7 +3,7 @@ import logging, datetime, time, argparse
 
 from google.cloud import bigquery
 
-from constants import GCP_PROJECT_ID, NE_MAP_PATH
+# from constants import GCP_PROJECT_ID, NE_MAP_PATH
 
 MOZILLA_TABLE_NAME = "moz-fx-data-shared-prod.internet_outages.global_outages_v2"
 DEFAULT_LOOKBACK_PERIOD = 2  # in days
@@ -59,7 +59,7 @@ CONTINENT_MAP = {
 BASEKEY = "mozilla_tlm"
 
 
-def fetchData(mozilla_table_name, starttime, endtime, region, saved):
+def fetchData(mozilla_table_name, projectid, starttime, endtime, region, saved):
     """
      Parameters:
           mozilla_table_name -- the table name to be queried that contains the Mozilla telemetry data
@@ -86,7 +86,7 @@ def fetchData(mozilla_table_name, starttime, endtime, region, saved):
     key = "%s.%s.%s.traffic" % (BASEKEY, contcode, region)
     key = key.encode()
 
-    client = bigquery.Client(project=GCP_PROJECT_ID)
+    client = bigquery.Client(project=projectid)
     query = ""
 
     if region:
@@ -224,9 +224,9 @@ def main(args):
 
     # for p in products:
     #     print(p, starttime, file=sys.stderr)
-    # todo: do we iterate across all regions? or expect a specific region arg to be entered
     #     for r in regions:
-    ret = fetchData(MOZILLA_TABLE_NAME, starttime, endtime, args.region, datadict)
+    #         ret = fetchData(trafrepo, starttime, endtime, p, r, datadict)
+    ret = fetchData(MOZILLA_TABLE_NAME, args.projectid, starttime, endtime, args.region, datadict)
 
     for ts, dat in sorted(datadict.items()):
         # If our fetched time range was expanded out to a full day, now
@@ -250,22 +250,20 @@ def main(args):
 
 
 if __name__ == "__main__":
-    # parser = argparse.ArgumentParser(
-    #     description='Continually fetches Mozilla telemetry data from the Google Bigquery and writes it into kafka')
-    #
-    # # parser.add_argument("--broker", type=str, required=True, help="The kafka broker to connect to")
-    # # parser.add_argument("--channel", type=str, required=True, help="Kafka channel to write the data into")
-    # # parser.add_argument("--topicprefix", type=str, required=True, help="Topic prefix to prepend to each Kafka message")
-    # parser.add_argument("--projectid", type=str, required=True, help="The Google Cloud project ID")
-    # parser.add_argument("--starttime", type=str, help="Fetch data from this time formatted as an ISO 8601 string (e.g., \
-    #                         \"2024-07-23T00:00:00\"), and this timestamp is inclusive. If not provided, \
-    #                         defaults to 1 day before endtime.")
-    # parser.add_argument("--endtime", type=str, help="Fetch data up until this time formatted as an ISO 8601 string \
-    #                         (e.g., \"2024-07-24T00:00:00\"), and this timestamp is exclusive. If not provided, \
-    #                         defaults to today's date at midnight.")
-    #
-    # args = parser.parse_args()
-    #
-    # main(args)
-    fetchData(MOZILLA_TABLE_NAME, region='NL', saved={})
+    parser = argparse.ArgumentParser(
+        description='Continually fetches Mozilla telemetry data from the Google Bigquery and writes it into kafka')
+
+    parser.add_argument("--broker", type=str, required=True, help="The kafka broker to connect to")
+    parser.add_argument("--channel", type=str, required=True, help="Kafka channel to write the data into")
+    parser.add_argument("--topicprefix", type=str, required=True, help="Topic prefix to prepend to each Kafka message")
+    parser.add_argument("--projectid", type=str, required=True, help="The Google Cloud project ID")
+    parser.add_argument("--starttime", type=int, help="Fetch traffic data starting from the given Unix timestamp. \
+                                                                    If not provided, defaults to 2 days before endtime.")
+    parser.add_argument("--endtime", type=int, help="Fetch traffic data up until the given Unix timestamp. \
+                                                                  If not provided, defaults to the current time.")
+    args = parser.parse_args()
+
+    main(args)
+    # args for fetchData: mozilla_table_name, projectid, starttime, endtime, region, saved):
+    # fetchData(MOZILLA_TABLE_NAME, region='NL', saved={})
     pass
