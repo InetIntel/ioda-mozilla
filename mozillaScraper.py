@@ -1,6 +1,5 @@
-import logging
-import time
-from datetime import datetime, timedelta, timezone
+import logging, datetime, time, argparse
+# import pytimeseries
 
 from google.cloud import bigquery
 
@@ -57,11 +56,10 @@ CONTINENT_MAP = {
     "VU": "OC", "WS": "OC", "YE": "AS", "YT": "AF", "ZA": "AF",
     "ZM": "AF", "ZW": "AF",
 }
-BASEKEY = "mozilla"
+BASEKEY = "mozilla_tlm"
 
 
-def fetchData(mozilla_table_name, region, saved=None,
-              start_time=None, end_time=datetime.now()):
+def fetchData(mozilla_table_name, starttime, endtime, region, saved):
     """
      Parameters:
           mozilla_table_name -- the table name to be queried that contains the Mozilla telemetry data
@@ -88,36 +86,28 @@ def fetchData(mozilla_table_name, region, saved=None,
     key = "%s.%s.%s.traffic" % (BASEKEY, contcode, region)
     key = key.encode()
 
-    if start_time:
-        start_time = datetime.fromtimestamp(start_time)
-    else:
-        start_time = end_time - timedelta(days=DEFAULT_LOOKBACK_PERIOD)
-
-    end_time = end_time.astimezone(timezone.utc)
-    start_time = start_time.astimezone(timezone.utc)
-
-    end_time_fmt = end_time.strftime("%Y-%m-%d %H:%M:%S")
-    start_time_fmt = start_time.strftime("%Y-%m-%d %H:%M:%S")
-
+    client = bigquery.Client(project=GCP_PROJECT_ID)
     query = ""
 
     if region:
-        query = get_query_string(start_time, end_time, region)
+        query = get_query_string(starttime, endtime, region)
 
     try:
-        client = bigquery.Client(project=GCP_PROJECT_ID)
         job = client.query(query)
-        mozilla_df = job.to_dataframe()
-    except Exception as error:
-        logging.warning("Failed to get data for %s.%s: %s", \
-                        region, str(error))
+        result_df = job.to_dataframe()
+    except bigquery.exceptions.GoogleCloudError as e:
+        logging.error("Failed to get telemetry data from %s to %s: %s", str(starttime), str(endtime), str(e))
+        return -1
+    except Exception as e:
+        logging.error("An unexpected error occurred from %s to %s: %s", str(starttime), str(endtime), str(e))
         return -1
 
     time.sleep(0.5)
-    if mozilla_df.empty:
+    if result_df.empty:
+        print("The telemetry data from %s to %s is None", str(starttime), str(endtime))
         return 0
 
-    fetched = process_mozilla_df(mozilla_df)
+    fetched = process_mozilla_df(result_df)
 
     # pytimeseries works best if we write all datapoints for a given timestamp
     # in a single batch, so we will save our fetched data into a dictionary
@@ -136,8 +126,8 @@ def fetchData(mozilla_table_name, region, saved=None,
 
         # The traffic data is stored as a normalised float (with 10 d.p. of
         # precision -- we'd rather deal with integers so scale it up
-        saved[ts].append((key, int(1000* v['proportion_timeout']),
-                          int(10*v['proportion_unreachable']), int(v['city_count'])))
+        saved[ts].append((key, int(1000 * v['proportion_timeout']),
+                          int(10 * v['proportion_unreachable']), int(v['city_count'])))
         print(saved)
     return 1
 
@@ -174,7 +164,6 @@ def process_mozilla_df(mozilla_df):
     region_agg_df = mozilla_df.groupby(["datetime", "country"]).agg({
         "proportion_timeout": "mean",
         "proportion_unreachable": "mean",
-        # todo: remove later, keep inside here for debugging first
         "adjusted_city": lambda city: list(set(city)),
     }).reset_index()
 
@@ -196,19 +185,87 @@ def transform_list_data_and_add_city_count(cols, df):
 
 
 def main(args):
-    # if start_time:
-    #     start_time = datetime.fromtimestamp(start_time)
-    # else:
-    #     start_time = end_time - timedelta(days=DEFAULT_LOOKBACK_PERIOD)
-    #
-    # end_time = end_time.astimezone(timezone.utc)
-    # start_time = start_time.astimezone(timezone.utc)
-    #
-    # end_time_fmt = end_time.strftime("%Y-%m-%d %H:%M:%S")
-    # start_time_fmt = start_time.strftime("%Y-%m-%d %H:%M:%S")
+    datadict = {}
+
+    # Boiler-plate libtimeseries setup for a kafka output
+    pyts = _pytimeseries.Timeseries()
+    be = pyts.get_backend_by_name('kafka')
+    if not be:
+        logging.error('Unable to find pytimeseries kafka backend')
+        return -1
+    if not pyts.enable_backend(be, "-b %s -c %s -f ascii -p %s" % ( \
+            args.broker, args.channel, args.topicprefix)):
+        logging.error('Unable to initialise pytimeseries kafka backend')
+        return -1
+
+    kp = pyts.new_keypackage(reset=False, disable=True)
+    # Boiler-plate ends
+
+    # Determine the start and end time periods for our upcoming query
+    if args.endtime:
+        endtime = datetime.datetime.fromtimestamp(args.endtime)
+    else:
+        endtime = datetime.datetime.now()
+
+    if args.starttime:
+        starttime = datetime.datetime.fromtimestamp(args.starttime)
+    else:
+        starttime = endtime - datetime.timedelta(days=DEFAULT_LOOKBACK_PERIOD)
+
+    # Due to a bug in the netanalysis API, we must fetch at least one
+    # days worth of data -- otherwise we will generate a 400 Bad Request.
+    if (starttime > endtime or \
+            endtime - starttime < datetime.timedelta(days=DEFAULT_LOOKBACK_PERIOD)):
+        starttime = endtime - datetime.timedelta(days=DEFAULT_LOOKBACK_PERIOD)
+
+    # format timestamps into appropriate strings for querying
+    endtime = endtime.astimezone(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    starttime = starttime.astimezone(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+    # for p in products:
+    #     print(p, starttime, file=sys.stderr)
+    # todo: do we iterate across all regions? or expect a specific region arg to be entered
+    #     for r in regions:
+    ret = fetchData(MOZILLA_TABLE_NAME, starttime, endtime, args.region, datadict)
+
+    for ts, dat in sorted(datadict.items()):
+        # If our fetched time range was expanded out to a full day, now
+        # is a good time for us to ignore any time periods that the user
+        # didn't explicitly ask for
+        if args.starttime and ts < args.starttime:
+            continue
+
+        # pytimeseries code to save each key and value for this timestamp
+        for val in dat:
+            idx = kp.get_key(val[0])
+            if idx is None:
+                idx = kp.add_key(val[0])
+            else:
+                kp.enable_key(idx)
+            kp.set(idx, val[1])
+
+        # Write to the kafka queue
+        kp.flush(ts)
     return
 
 
 if __name__ == "__main__":
+    # parser = argparse.ArgumentParser(
+    #     description='Continually fetches Mozilla telemetry data from the Google Bigquery and writes it into kafka')
+    #
+    # # parser.add_argument("--broker", type=str, required=True, help="The kafka broker to connect to")
+    # # parser.add_argument("--channel", type=str, required=True, help="Kafka channel to write the data into")
+    # # parser.add_argument("--topicprefix", type=str, required=True, help="Topic prefix to prepend to each Kafka message")
+    # parser.add_argument("--projectid", type=str, required=True, help="The Google Cloud project ID")
+    # parser.add_argument("--starttime", type=str, help="Fetch data from this time formatted as an ISO 8601 string (e.g., \
+    #                         \"2024-07-23T00:00:00\"), and this timestamp is inclusive. If not provided, \
+    #                         defaults to 1 day before endtime.")
+    # parser.add_argument("--endtime", type=str, help="Fetch data up until this time formatted as an ISO 8601 string \
+    #                         (e.g., \"2024-07-24T00:00:00\"), and this timestamp is exclusive. If not provided, \
+    #                         defaults to today's date at midnight.")
+    #
+    # args = parser.parse_args()
+    #
+    # main(args)
     fetchData(MOZILLA_TABLE_NAME, region='NL', saved={})
     pass
