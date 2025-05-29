@@ -196,7 +196,6 @@ def transform_list_data_and_add_city_count(cols, df):
 
 
 def main(args):
-    # todo: handle time here
     # if start_time:
     #     start_time = datetime.fromtimestamp(start_time)
     # else:
@@ -211,9 +210,5 @@ def main(args):
 
 
 if __name__ == "__main__":
-    # get_mozilla_data(country='NL', region=4416)
-    # get_mozilla_data(region=4416)
     fetchData(MOZILLA_TABLE_NAME, region='NL', saved={})
-    # get_mozilla_data()
-    # get_ioda_regions()
     pass
