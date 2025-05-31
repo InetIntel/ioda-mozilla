@@ -3,10 +3,11 @@ import logging, datetime, time, argparse
 
 from google.cloud import bigquery
 
-# from constants import GCP_PROJECT_ID, NE_MAP_PATH
+from constants import GCP_PROJECT_ID, NE_MAP_PATH
 
 MOZILLA_TABLE_NAME = "moz-fx-data-shared-prod.internet_outages.global_outages_v2"
 DEFAULT_LOOKBACK_PERIOD = 2  # in days
+# continent map for topic string
 CONTINENT_MAP = {
     "AD": "EU", "AE": "AS", "AF": "AS", "AG": "NA", "AI": "NA",
     "AL": "EU", "AM": "AS", "AO": "AF", "AQ": "AN", "AR": "SA",
@@ -58,8 +59,22 @@ CONTINENT_MAP = {
 }
 BASEKEY = "mozilla_tlm"
 
+# ioda + country code - country, then filter down to region
+# key: productid - different metrics (timeout etc)
+# region - tbc
+# gtr line 213 - expect diff tuples with the various values for diff regions.
+# country codes (regions) - hardcode first. should be ioda regionids/mozilla country codes
+def fetchData(projectid, starttime, endtime, region, saved):
+    if endtime:
+        endtime = datetime.datetime.fromtimestamp(endtime)
+    else:
+        endtime = datetime.datetime.now()
 
-def fetchData(mozilla_table_name, projectid, starttime, endtime, region, saved):
+    if starttime:
+        starttime = datetime.datetime.fromtimestamp(starttime)
+    else:
+        starttime = endtime - datetime.timedelta(days=DEFAULT_LOOKBACK_PERIOD)
+
     """
      Parameters:
           mozilla_table_name -- the table name to be queried that contains the Mozilla telemetry data
@@ -68,7 +83,7 @@ def fetchData(mozilla_table_name, projectid, starttime, endtime, region, saved):
           end_time -- the end of the time period to query for (as a
                         Datetime object)
           region -- the ISO 2-letter country code for the region to query
-                    for (?)
+                    for
           saved -- the dictionary to save the fetched data into
     """
     # IODA uses a "continent.country" format to hierarchically structure
@@ -80,29 +95,25 @@ def fetchData(mozilla_table_name, projectid, starttime, endtime, region, saved):
     else:
         contcode = CONTINENT_MAP[region]
 
-    # This is the key that we're going to write into kafka for this
-    # region + product. They key must be encoded because pytimeseries
-    # expects a bytes object for the key, not a string.
-    key = "%s.%s.%s.traffic" % (BASEKEY, contcode, region)
-    key = key.encode()
-
     client = bigquery.Client(project=projectid)
     query = ""
 
+    # need to check if region exists in moz telem data
     if region:
         query = get_query_string(starttime, endtime, region)
 
     try:
         job = client.query(query)
         result_df = job.to_dataframe()
-    except bigquery.exceptions.GoogleCloudError as e:
-        logging.error("Failed to get telemetry data from %s to %s: %s", str(starttime), str(endtime), str(e))
-        return -1
+    # except bigquery.exceptions.GoogleCloudError as e:
+    #     logging.error("Failed to get telemetry data from %s to %s: %s", str(starttime), str(endtime), str(e))
+    #     return -1
     except Exception as e:
         logging.error("An unexpected error occurred from %s to %s: %s", str(starttime), str(endtime), str(e))
         return -1
 
-    time.sleep(0.5)
+    # remove? tbc
+    time.sleep(0.1)
     if result_df.empty:
         print("The telemetry data from %s to %s is None", str(starttime), str(endtime))
         return 0
@@ -118,17 +129,21 @@ def fetchData(mozilla_table_name, projectid, starttime, endtime, region, saved):
         # {'proportion_timeout': float, 'proportion_unreachable': float, 'city_count': int}
 
         ts = int(k.timestamp())
-        print(ts)
-        print(v)
 
         if ts not in saved:
             saved[ts] = []
 
-        # The traffic data is stored as a normalised float (with 10 d.p. of
-        # precision -- we'd rather deal with integers so scale it up
-        saved[ts].append((key, int(1000 * v['proportion_timeout']),
-                          int(10 * v['proportion_unreachable']), int(v['city_count'])))
-        print(saved)
+        for metric, metric_v in v.items():
+            # This is the key that we're going to write into kafka for this
+            # region + product. They key must be encoded because pytimeseries
+            # expects a bytes object for the key, not a string.
+            key = "%s.%s.%s.%s.traffic" % (BASEKEY, contcode, region, metric)
+            key = key.encode()
+
+            # The traffic data is stored as a normalised float (with 10 d.p. of
+            # precision -- we'd rather deal with integers so scale it up
+            saved[ts].append((key, int(10000000000 * metric_v)))
+        # print(saved)
     return 1
 
 
@@ -161,20 +176,20 @@ def get_query_string(start_time, end_time, region):
 
 
 def process_mozilla_df(mozilla_df):
-    region_agg_df = mozilla_df.groupby(["datetime", "country"]).agg({
+    country_agg_df = mozilla_df.groupby(["datetime", "country"]).agg({
         "proportion_timeout": "mean",
         "proportion_unreachable": "mean",
         "adjusted_city": lambda city: list(set(city)),
     }).reset_index()
 
-    # for debugging only
+    # for counting number of cities and showing list of cities only,
+    # List of cities will be dropped in eventual time series.
     city_col_debugging = ['adjusted_city']
-    region_agg_df = (transform_list_data_and_add_city_count(city_col_debugging, region_agg_df)
+    country_agg_df = (transform_list_data_and_add_city_count(city_col_debugging, country_agg_df)
                      .set_index('datetime').drop(['country', 'adjusted_city'], axis=1))
 
-    region_agg_df = region_agg_df.to_dict(orient="index")
-    # print(region_agg_df)
-    return region_agg_df
+    country_agg_df = country_agg_df.to_dict(orient="index")
+    return country_agg_df
 
 
 def transform_list_data_and_add_city_count(cols, df):
@@ -265,5 +280,5 @@ if __name__ == "__main__":
 
     main(args)
     # args for fetchData: mozilla_table_name, projectid, starttime, endtime, region, saved):
-    # fetchData(MOZILLA_TABLE_NAME, region='NL', saved={})
+    # fetchData(GCP_PROJECT_ID, None, None, region='NL', saved={})
     pass
