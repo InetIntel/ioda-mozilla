@@ -61,6 +61,7 @@ CONTINENT_MAP = {
 }
 BASEKEY = "mozilla_tlm"
 
+
 # ioda + country code - country, then filter down to region
 # key: productid - different metrics (timeout etc)
 # region - tbc
@@ -152,18 +153,89 @@ def fetchData(projectid, starttime, endtime, region, saved):
             # precision -- we'd rather deal with integers so scale it up
             saved[ts].append((key, int(10000000000 * metric_value)))
 
-    # TODO: confirm how to feed in batched region-agg data.
-    # possible option 1: store keys as 2-tuple eg 4408, Timestamp(..): {
-    # check pytimeseries and compatible formats.
-    # for now, fetched_region has the format:
-    # {region id(int):
-    #     {timestamp:
-    #       {'proportion_timeout': float,
-    #        'proportion_unreachable': float,
-    #         'city_count': int}
-    #     }
-    # }
+    """
+        TODO: confirm structure of batched region-agg data.
+        Possible Option 1: store region value in encoded key eg b'mozilla_tlm.NA.US.4408.city_count.traffic'
+                 Option 2: store keys in data as a 2-tuple eg (4408, 1749110400) instead of current singular timestamp key.
+        
+        For now, fetched_region has the format:
+        {region id(int):
+             {timestamp:
+               {'proportion_timeout': float,
+                'proportion_unreachable': float,
+                'city_count': int}
+             }
+        }
+        
+        (note to self: need to check pytimeseries and compatible formats)
+    """
 
+    """ 
+        Option 1 example output:
+            {
+                1749160800: 
+                    [
+                        (b'mozilla_tlm.NA.US.4408.proportion_timeout.traffic', 386590053), 
+                        (b'mozilla_tlm.NA.US.4408.proportion_unreachable.traffic', 6085560516), 
+                        (b'mozilla_tlm.NA.US.4408.city_count.traffic', 50000000000), 
+                        (b'mozilla_tlm.NA.US.4409.proportion_timeout.traffic', 144823074), 
+                        (b'mozilla_tlm.NA.US.4409.proportion_unreachable.traffic', 5062273165), 
+                        (b'mozilla_tlm.NA.US.4409.city_count.traffic', 40000000000)
+                    ],
+                1749164400: 
+                    [
+                        (b'mozilla_tlm.NA.US.4408.proportion_timeout.traffic', 296940601), 
+                        (b'mozilla_tlm.NA.US.4408.proportion_unreachable.traffic', 7174961422),
+                        (b'mozilla_tlm.NA.US.4408.city_count.traffic', 70000000000),
+                        (b'mozilla_tlm.NA.US.4409.proportion_timeout.traffic', 204642672), 
+                        (b'mozilla_tlm.NA.US.4409.proportion_unreachable.traffic', 6032393878), 
+                        (b'mozilla_tlm.NA.US.4409.city_count.traffic', 40000000000)
+                    ]
+            }
+    """
+    saved_region = {}
+    for ioda_id, timestamp_data in fetched_region.items():
+        for timestamp, all_metrics_dict in timestamp_data.items():
+            ts = int(timestamp.timestamp())
+
+            if ts not in saved_region:
+                saved_region[ts] = []
+
+            for metric, metric_value in all_metrics_dict.items():
+                key = "%s.%s.%s.%s.%s.traffic" % (BASEKEY, contcode, region, ioda_id, metric)
+                key = key.encode()
+
+                saved_region[ts].append((key, int(10000000000 * metric_value)))
+
+    """ 
+        Option 2 example output:
+        {
+            (4458, 1749160800):
+                    [
+                        (b'mozilla_tlm.NA.US.proportion_timeout.traffic', 192377495),
+                        (b'mozilla_tlm.NA.US.proportion_unreachable.traffic', 4466424682),
+                        (b'mozilla_tlm.NA.US.city_count.traffic', 20000000000)
+                    ],
+            (4458, 1749164400):
+                    [
+                        (b'mozilla_tlm.NA.US.proportion_timeout.traffic', 417962830),
+                        (b'mozilla_tlm.NA.US.proportion_unreachable.traffic', 5554957326),
+                        (b'mozilla_tlm.NA.US.city_count.traffic', 20000000000)
+                    ]
+        }
+    """
+    saved_region = {}
+    for ioda_id, timestamp_data in fetched_region.items():
+        for timestamp, all_metrics_dict in timestamp_data.items():
+            ts = int(timestamp.timestamp())
+            if (ioda_id, ts) not in saved_region.keys():
+                saved_region[ioda_id, ts] = []
+
+            for metric, metric_value in all_metrics_dict.items():
+                key = "%s.%s.%s.%s.traffic" % (BASEKEY, contcode, region, metric)
+                key = key.encode()
+
+                saved_region[ioda_id, ts].append((key, int(10000000000 * metric_value)))
     return 1
 
 
@@ -229,7 +301,7 @@ def process_mozilla_df(mozilla_df):
     }).reset_index()
 
     region_agg_df = (transform_list_data_and_add_city_count(city_col_debugging, region_agg_df)
-                      .set_index(['datetime', 'ioda_id']).drop(['adjusted_city'], axis=1))
+                     .set_index(['datetime', 'ioda_id']).drop(['adjusted_city'], axis=1))
 
     # batch according to region code, and store timestamp-aggregated data as values
     region_batches = {ioda_id: data.droplevel('ioda_id') for ioda_id, data in region_agg_df.groupby('ioda_id')}
