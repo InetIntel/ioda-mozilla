@@ -1,4 +1,6 @@
 import logging, datetime, time, argparse
+
+import pandas as pd
 # import pytimeseries
 
 from google.cloud import bigquery
@@ -83,7 +85,7 @@ def fetchData(projectid, starttime, endtime, region, saved):
           end_time -- the end of the time period to query for (as a
                         Datetime object)
           region -- the ISO 2-letter country code for the region to query
-                    for
+                    for, or the 4-digit IODA region ID.
           saved -- the dictionary to save the fetched data into
     """
     # IODA uses a "continent.country" format to hierarchically structure
@@ -98,33 +100,39 @@ def fetchData(projectid, starttime, endtime, region, saved):
     client = bigquery.Client(project=projectid)
     query = ""
 
-    # need to check if region exists in moz telem data
+    # 6 Jun: implemented check for presence of region.
     if region:
-        query = get_query_string(starttime, endtime, region)
+        try:
+            check_region_exists_mozilla(region)
+            query = get_query_string(starttime, endtime, region)
+        except Exception as e:
+            logging.error("Region %s not found in Mozilla Telemetry data." % (region))
+    else:
+        # no region specified, obtain data for all countries.
+        query = get_query_string(starttime, endtime)
 
     try:
         job = client.query(query)
         result_df = job.to_dataframe()
-    # except bigquery.exceptions.GoogleCloudError as e:
-    #     logging.error("Failed to get telemetry data from %s to %s: %s", str(starttime), str(endtime), str(e))
-    #     return -1
+    except bigquery.exceptions.BigQueryError as e:
+        logging.error("Failed to get telemetry data from %s to %s: %s", str(starttime), str(endtime), str(e))
+        return -1
     except Exception as e:
         logging.error("An unexpected error occurred from %s to %s: %s", str(starttime), str(endtime), str(e))
         return -1
 
-    # remove? tbc
     time.sleep(0.1)
     if result_df.empty:
         print("The telemetry data from %s to %s is None", str(starttime), str(endtime))
         return 0
 
-    fetched = process_mozilla_df(result_df)
+    fetched_country, fetched_region = process_mozilla_df(result_df)
 
     # pytimeseries works best if we write all datapoints for a given timestamp
     # in a single batch, so we will save our fetched data into a dictionary
     # keyed by timestamp. Once we've fetched everything, then we can walk
     # through that dictionary to emit the data in timestamp order.
-    for k, v in fetched.items():
+    for k, all_metrics_dict in fetched_country.items():
         # note that v values are in the format:
         # {'proportion_timeout': float, 'proportion_unreachable': float, 'city_count': int}
 
@@ -133,7 +141,7 @@ def fetchData(projectid, starttime, endtime, region, saved):
         if ts not in saved:
             saved[ts] = []
 
-        for metric, metric_v in v.items():
+        for metric, metric_value in all_metrics_dict.items():
             # This is the key that we're going to write into kafka for this
             # region + product. They key must be encoded because pytimeseries
             # expects a bytes object for the key, not a string.
@@ -142,12 +150,24 @@ def fetchData(projectid, starttime, endtime, region, saved):
 
             # The traffic data is stored as a normalised float (with 10 d.p. of
             # precision -- we'd rather deal with integers so scale it up
-            saved[ts].append((key, int(10000000000 * metric_v)))
-        # print(saved)
+            saved[ts].append((key, int(10000000000 * metric_value)))
+
+    # TODO: confirm how to feed in batched region-agg data.
+    # possible option 1: store keys as 2-tuple eg 4408, Timestamp(..): {
+    # check pytimeseries and compatible formats.
+    # for now, fetched_region has the format:
+    # {region id(int):
+    #     {timestamp:
+    #       {'proportion_timeout': float,
+    #        'proportion_unreachable': float,
+    #         'city_count': int}
+    #     }
+    # }
+
     return 1
 
 
-def get_query_string(start_time, end_time, region):
+def get_query_string(start_time, end_time, region=None):
     unknown_city_case = """
         CASE 
             WHEN city = 'unknown' AND (geo_subdivision1 IS NOT NULL AND geo_subdivision1 != '')
@@ -175,6 +195,12 @@ def get_query_string(start_time, end_time, region):
     return base_query
 
 
+def check_region_exists_mozilla(region):
+    ne_map = pd.read_csv(NE_MAP_PATH)
+    if not (ne_map['country'].isin([region]).any()) or (ne_map['ioda_id'].isin([region]).any()):
+        raise ValueError(f"Region {region} is not found in the Mozilla data.")
+
+
 def process_mozilla_df(mozilla_df):
     country_agg_df = mozilla_df.groupby(["datetime", "country"]).agg({
         "proportion_timeout": "mean",
@@ -186,10 +212,32 @@ def process_mozilla_df(mozilla_df):
     # List of cities will be dropped in eventual time series.
     city_col_debugging = ['adjusted_city']
     country_agg_df = (transform_list_data_and_add_city_count(city_col_debugging, country_agg_df)
-                     .set_index('datetime').drop(['country', 'adjusted_city'], axis=1))
+                      .set_index('datetime').drop(['country', 'adjusted_city'], axis=1))
+    country_agg_dict = country_agg_df.to_dict(orient="index")
 
-    country_agg_df = country_agg_df.to_dict(orient="index")
-    return country_agg_df
+    # region-aggregated data is trickier, we need to map and aggregate the data according to region code
+    ne_mapping = pd.read_csv(NE_MAP_PATH)
+    # convert ioda_ids to ints. if not available, convert to NaN
+    ne_mapping.ioda_id = pd.to_numeric(ne_mapping.ioda_id, errors='coerce').astype('Int64')
+    mozilla_with_ioda_id_df = mozilla_df.merge(ne_mapping,
+                                               on=['country', 'geo_subdivision1', 'geo_subdivision2', 'city'])
+
+    region_agg_df = mozilla_with_ioda_id_df.groupby(["datetime", "ioda_id"]).agg({
+        "proportion_timeout": "mean",
+        "proportion_unreachable": "mean",
+        "adjusted_city": lambda city: list(set(city))
+    }).reset_index()
+
+    region_agg_df = (transform_list_data_and_add_city_count(city_col_debugging, region_agg_df)
+                      .set_index(['datetime', 'ioda_id']).drop(['adjusted_city'], axis=1))
+
+    # batch according to region code, and store timestamp-aggregated data as values
+    region_batches = {ioda_id: data.droplevel('ioda_id') for ioda_id, data in region_agg_df.groupby('ioda_id')}
+
+    region_agg_dict = {int(ioda_id): timestamp_agg_df.to_dict(orient="index")
+                       for ioda_id, timestamp_agg_df in region_batches.items()}
+
+    return country_agg_dict, region_agg_dict
 
 
 def transform_list_data_and_add_city_count(cols, df):
@@ -265,20 +313,20 @@ def main(args):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description='Continually fetches Mozilla telemetry data from the Google Bigquery and writes it into kafka')
-
-    parser.add_argument("--broker", type=str, required=True, help="The kafka broker to connect to")
-    parser.add_argument("--channel", type=str, required=True, help="Kafka channel to write the data into")
-    parser.add_argument("--topicprefix", type=str, required=True, help="Topic prefix to prepend to each Kafka message")
-    parser.add_argument("--projectid", type=str, required=True, help="The Google Cloud project ID")
-    parser.add_argument("--starttime", type=int, help="Fetch traffic data starting from the given Unix timestamp. \
-                                                                    If not provided, defaults to 2 days before endtime.")
-    parser.add_argument("--endtime", type=int, help="Fetch traffic data up until the given Unix timestamp. \
-                                                                  If not provided, defaults to the current time.")
-    args = parser.parse_args()
-
-    main(args)
+    # parser = argparse.ArgumentParser(
+    #     description='Continually fetches Mozilla telemetry data from the Google Bigquery and writes it into kafka')
+    #
+    # parser.add_argument("--broker", type=str, required=True, help="The kafka broker to connect to")
+    # parser.add_argument("--channel", type=str, required=True, help="Kafka channel to write the data into")
+    # parser.add_argument("--topicprefix", type=str, required=True, help="Topic prefix to prepend to each Kafka message")
+    # parser.add_argument("--projectid", type=str, required=True, help="The Google Cloud project ID")
+    # parser.add_argument("--starttime", type=int, help="Fetch traffic data starting from the given Unix timestamp. \
+    #                                                                 If not provided, defaults to 2 days before endtime.")
+    # parser.add_argument("--endtime", type=int, help="Fetch traffic data up until the given Unix timestamp. \
+    #                                                               If not provided, defaults to the current time.")
+    # args = parser.parse_args()
+    #
+    # main(args)
     # args for fetchData: mozilla_table_name, projectid, starttime, endtime, region, saved):
-    # fetchData(GCP_PROJECT_ID, None, None, region='NL', saved={})
+    fetchData(GCP_PROJECT_ID, None, None, region='US', saved={})
     pass
