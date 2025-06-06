@@ -68,16 +68,6 @@ BASEKEY = "mozilla_tlm"
 # gtr line 213 - expect diff tuples with the various values for diff regions.
 # country codes (regions) - hardcode first. should be ioda regionids/mozilla country codes
 def fetchData(projectid, starttime, endtime, region, saved):
-    if endtime:
-        endtime = datetime.datetime.fromtimestamp(endtime)
-    else:
-        endtime = datetime.datetime.now()
-
-    if starttime:
-        starttime = datetime.datetime.fromtimestamp(starttime)
-    else:
-        starttime = endtime - datetime.timedelta(days=DEFAULT_LOOKBACK_PERIOD)
-
     """
      Parameters:
           mozilla_table_name -- the table name to be queried that contains the Mozilla telemetry data
