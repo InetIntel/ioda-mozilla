@@ -7,6 +7,7 @@ from google.cloud import bigquery
 
 from constants import GCP_PROJECT_ID, NE_MAP_PATH
 
+# update into constants file
 MOZILLA_TABLE_NAME = "moz-fx-data-shared-prod.internet_outages.global_outages_v2"
 DEFAULT_LOOKBACK_PERIOD = 2  # in days
 # continent map for topic string
@@ -91,7 +92,6 @@ def fetchData(projectid, starttime, endtime, region, saved):
     client = bigquery.Client(project=projectid)
     query = ""
 
-    # 6 Jun: implemented check for presence of region.
     if region:
         try:
             check_region_exists_mozilla(region)
@@ -118,114 +118,42 @@ def fetchData(projectid, starttime, endtime, region, saved):
         return 0
 
     fetched_country, fetched_region = process_mozilla_df(result_df)
+    print(fetched_country)
 
     # pytimeseries works best if we write all datapoints for a given timestamp
     # in a single batch, so we will save our fetched data into a dictionary
     # keyed by timestamp. Once we've fetched everything, then we can walk
     # through that dictionary to emit the data in timestamp order.
-    for k, all_metrics_dict in fetched_country.items():
-        # note that v values are in the format:
-        # {'proportion_timeout': float, 'proportion_unreachable': float, 'city_count': int}
-
+    for k, all_metrics in fetched_country.items():
         ts = int(k.timestamp())
 
         if ts not in saved:
             saved[ts] = []
 
-        for metric, metric_value in all_metrics_dict.items():
+        for metric, metric_value in all_metrics.items():
             # This is the key that we're going to write into kafka for this
             # region + product. They key must be encoded because pytimeseries
             # expects a bytes object for the key, not a string.
-            key = "%s.%s.%s.%s.traffic" % (BASEKEY, contcode, region, metric)
+            key = "%s.%s.%s.%s.%s.traffic" % (BASEKEY, contcode, 'country', region, metric)
             key = key.encode()
 
             # The traffic data is stored as a normalised float (with 10 d.p. of
             # precision -- we'd rather deal with integers so scale it up
             saved[ts].append((key, int(10000000000 * metric_value)))
 
-    """
-        TODO: confirm structure of batched region-agg data.
-        Possible Option 1: store region value in encoded key eg b'mozilla_tlm.NA.US.4408.city_count.traffic'
-                 Option 2: store keys in data as a 2-tuple eg (4408, 1749110400) instead of current singular timestamp key.
-        
-        For now, fetched_region has the format:
-        {region id(int):
-             {timestamp:
-               {'proportion_timeout': float,
-                'proportion_unreachable': float,
-                'city_count': int}
-             }
-        }
-        
-        (note to self: need to check pytimeseries and compatible formats)
-    """
-
-    """ 
-        Option 1 example output:
-            {
-                1749160800: 
-                    [
-                        (b'mozilla_tlm.NA.US.4408.proportion_timeout.traffic', 386590053), 
-                        (b'mozilla_tlm.NA.US.4408.proportion_unreachable.traffic', 6085560516), 
-                        (b'mozilla_tlm.NA.US.4408.city_count.traffic', 50000000000), 
-                        (b'mozilla_tlm.NA.US.4409.proportion_timeout.traffic', 144823074), 
-                        (b'mozilla_tlm.NA.US.4409.proportion_unreachable.traffic', 5062273165), 
-                        (b'mozilla_tlm.NA.US.4409.city_count.traffic', 40000000000)
-                    ],
-                1749164400: 
-                    [
-                        (b'mozilla_tlm.NA.US.4408.proportion_timeout.traffic', 296940601), 
-                        (b'mozilla_tlm.NA.US.4408.proportion_unreachable.traffic', 7174961422),
-                        (b'mozilla_tlm.NA.US.4408.city_count.traffic', 70000000000),
-                        (b'mozilla_tlm.NA.US.4409.proportion_timeout.traffic', 204642672), 
-                        (b'mozilla_tlm.NA.US.4409.proportion_unreachable.traffic', 6032393878), 
-                        (b'mozilla_tlm.NA.US.4409.city_count.traffic', 40000000000)
-                    ]
-            }
-    """
-    saved_region = {}
-    for ioda_id, timestamp_data in fetched_region.items():
-        for timestamp, all_metrics_dict in timestamp_data.items():
+    for timestamp, region_data in fetched_region.items():
+        for ioda_id, all_metrics in region_data.items():
             ts = int(timestamp.timestamp())
 
-            if ts not in saved_region:
-                saved_region[ts] = []
+            if ts not in saved:
+                saved[ts] = []
 
-            for metric, metric_value in all_metrics_dict.items():
-                key = "%s.%s.%s.%s.%s.traffic" % (BASEKEY, contcode, region, ioda_id, metric)
+            for metric, metric_value in all_metrics.items():
+                key = "%s.%s.%s.%s.%s.traffic" % (BASEKEY, contcode, 'region', ioda_id, metric)
                 key = key.encode()
 
-                saved_region[ts].append((key, int(10000000000 * metric_value)))
+                saved[ts].append((key, int(10000000000 * metric_value)))
 
-    """ 
-        Option 2 example output:
-        {
-            (4458, 1749160800):
-                    [
-                        (b'mozilla_tlm.NA.US.proportion_timeout.traffic', 192377495),
-                        (b'mozilla_tlm.NA.US.proportion_unreachable.traffic', 4466424682),
-                        (b'mozilla_tlm.NA.US.city_count.traffic', 20000000000)
-                    ],
-            (4458, 1749164400):
-                    [
-                        (b'mozilla_tlm.NA.US.proportion_timeout.traffic', 417962830),
-                        (b'mozilla_tlm.NA.US.proportion_unreachable.traffic', 5554957326),
-                        (b'mozilla_tlm.NA.US.city_count.traffic', 20000000000)
-                    ]
-        }
-    """
-    saved_region = {}
-    for ioda_id, timestamp_data in fetched_region.items():
-        for timestamp, all_metrics_dict in timestamp_data.items():
-            ts = int(timestamp.timestamp())
-            if (ioda_id, ts) not in saved_region.keys():
-                saved_region[ioda_id, ts] = []
-
-            for metric, metric_value in all_metrics_dict.items():
-                key = "%s.%s.%s.%s.traffic" % (BASEKEY, contcode, region, metric)
-                key = key.encode()
-
-                saved_region[ioda_id, ts].append((key, int(10000000000 * metric_value)))
     return 1
 
 
@@ -258,6 +186,7 @@ def get_query_string(start_time, end_time, region=None):
 
 
 def check_region_exists_mozilla(region):
+    # store ne_map as global var - keep calling it.
     ne_map = pd.read_csv(NE_MAP_PATH)
     if not (ne_map['country'].isin([region]).any()) or (ne_map['ioda_id'].isin([region]).any()):
         raise ValueError(f"Region {region} is not found in the Mozilla data.")
@@ -293,13 +222,11 @@ def process_mozilla_df(mozilla_df):
     region_agg_df = (transform_list_data_and_add_city_count(city_col_debugging, region_agg_df)
                      .set_index(['datetime', 'ioda_id']).drop(['adjusted_city'], axis=1))
 
-    # batch according to region code, and store timestamp-aggregated data as values
-    region_batches = {ioda_id: data.droplevel('ioda_id') for ioda_id, data in region_agg_df.groupby('ioda_id')}
-
-    region_agg_dict = {int(ioda_id): timestamp_agg_df.to_dict(orient="index")
-                       for ioda_id, timestamp_agg_df in region_batches.items()}
-
-    return country_agg_dict, region_agg_dict
+    # batch according to timestamp, and store region data as values
+    region_batches = {timestamp: data.droplevel('datetime') for timestamp, data in region_agg_df.groupby('datetime')}
+    region_agg_dict = {timestamp: timestamp_agg_df.to_dict(orient="index")
+                       for timestamp, timestamp_agg_df in region_batches.items()}
+    return (country_agg_dict, region_agg_dict)
 
 
 def transform_list_data_and_add_city_count(cols, df):
@@ -390,5 +317,4 @@ if __name__ == "__main__":
     #
     # main(args)
     # args for fetchData: mozilla_table_name, projectid, starttime, endtime, region, saved):
-    fetchData(GCP_PROJECT_ID, None, None, region='US', saved={})
     pass
