@@ -149,7 +149,7 @@ def process_mozilla_df(mozilla_df):
     # convert ioda_ids to ints. if not available, convert to NaN
     NE_MAPPING.ioda_id = pd.to_numeric(NE_MAPPING.ioda_id, errors='coerce').astype('Int64')
     mozilla_with_ioda_id_df = mozilla_df.merge(NE_MAPPING,
-                                               on=['country', 'geo_subdivision1', 'geo_subdivision2', 'city'])
+                                               on=['country', 'geo_subdivision1', 'geo_subdivision2'])
 
     region_agg_df = mozilla_with_ioda_id_df.groupby(["datetime", "ioda_id"]).agg({
         "proportion_timeout": "mean",
@@ -255,5 +255,5 @@ if __name__ == "__main__":
     # args = parser.parse_args()
     #
     # main(args)
-    fetchData(GCP_PROJECT_ID, None, None, region='US', saved={})
+    fetchData(GCP_PROJECT_ID, None, None, region='ES', saved={})
     pass
