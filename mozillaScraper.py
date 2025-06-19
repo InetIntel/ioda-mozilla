@@ -7,7 +7,7 @@ from google.cloud import bigquery
 
 from constants import GCP_PROJECT_ID, NE_MAP_PATH, DEFAULT_LOOKBACK_PERIOD, CONTINENT_MAP, BASEKEY, MOZILLA_TABLE_NAME
 
-NE_MAP = pd.read_csv(NE_MAP_PATH)
+NE_MAPPING = pd.read_csv(NE_MAP_PATH)
 
 
 def fetchData(projectid, starttime, endtime, region, saved):
@@ -127,7 +127,7 @@ def get_query_string(start_time, end_time, region=None):
 
 
 def check_region_exists_mozilla(region):
-    if not (NE_MAP['country'].isin([region]).any()) or (NE_MAP['ioda_id'].isin([region]).any()):
+    if not (NE_MAPPING['country'].isin([region]).any()) or (NE_MAPPING['ioda_id'].isin([region]).any()):
         raise ValueError(f"Region {region} is not found in the Mozilla data.")
 
 
@@ -146,10 +146,9 @@ def process_mozilla_df(mozilla_df):
     country_agg_dict = country_agg_df.to_dict(orient="index")
 
     # region-aggregated data is trickier, we need to map and aggregate the data according to region code
-    ne_mapping = pd.read_csv(NE_MAP_PATH)
     # convert ioda_ids to ints. if not available, convert to NaN
-    ne_mapping.ioda_id = pd.to_numeric(ne_mapping.ioda_id, errors='coerce').astype('Int64')
-    mozilla_with_ioda_id_df = mozilla_df.merge(ne_mapping,
+    NE_MAPPING.ioda_id = pd.to_numeric(NE_MAPPING.ioda_id, errors='coerce').astype('Int64')
+    mozilla_with_ioda_id_df = mozilla_df.merge(NE_MAPPING,
                                                on=['country', 'geo_subdivision1', 'geo_subdivision2', 'city'])
 
     region_agg_df = mozilla_with_ioda_id_df.groupby(["datetime", "ioda_id"]).agg({
