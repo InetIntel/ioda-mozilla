@@ -5,69 +5,11 @@ import pandas as pd
 
 from google.cloud import bigquery
 
-from constants import GCP_PROJECT_ID, NE_MAP_PATH
+from constants import GCP_PROJECT_ID, NE_MAP_PATH, DEFAULT_LOOKBACK_PERIOD, CONTINENT_MAP, BASEKEY, MOZILLA_TABLE_NAME
 
-# update into constants file
-MOZILLA_TABLE_NAME = "moz-fx-data-shared-prod.internet_outages.global_outages_v2"
-DEFAULT_LOOKBACK_PERIOD = 2  # in days
-# continent map for topic string
-CONTINENT_MAP = {
-    "AD": "EU", "AE": "AS", "AF": "AS", "AG": "NA", "AI": "NA",
-    "AL": "EU", "AM": "AS", "AO": "AF", "AQ": "AN", "AR": "SA",
-    "AT": "EU", "AU": "OC", "AW": "NA", "AX": "EU", "AZ": "AS",
-    "BA": "EU", "BB": "NA", "BD": "AS", "BE": "EU", "BF": "AF",
-    "BG": "EU", "BH": "AS", "BI": "AF", "BJ": "AF", "BM": "NA",
-    "BN": "AS", "BO": "SA", "BR": "SA", "BS": "NA", "BT": "AS",
-    "BW": "AF", "BY": "EU", "BZ": "NA", "CA": "NA", "CD": "AF",
-    "CF": "AF", "CG": "AF", "CH": "EU", "CI": "AF", "CK": "OC",
-    "CL": "SA", "CM": "AF", "CN": "AS", "CO": "SA", "CR": "NA",
-    "CU": "NA", "CV": "AF", "CY": "EU", "CZ": "EU", "DE": "EU",
-    "DJ": "AF", "DK": "EU", "DM": "NA", "DO": "NA", "DZ": "AF",
-    "EC": "SA", "EE": "EU", "EG": "AF", "EH": "AF", "ER": "AF",
-    "ES": "EU", "ET": "AF", "FI": "EU", "FJ": "OC", "FM": "OC",
-    "FO": "EU", "FR": "EU", "GA": "AF", "GB": "EU", "GD": "NA",
-    "GE": "EU", "GF": "SA", "GG": "EU", "GH": "AF", "GI": "EU",
-    "GL": "NA", "GM": "AF", "GN": "AF", "GP": "NA", "GQ": "AF",
-    "GR": "EU", "GT": "NA", "GU": "OC", "GW": "AF", "GY": "SA",
-    "HK": "AS", "HN": "NA", "HR": "EU", "HT": "NA", "HU": "EU",
-    "ID": "AS", "IE": "EU", "IL": "AS", "IM": "EU", "IN": "AS",
-    "IQ": "AS", "IR": "AS", "IS": "EU", "IT": "EU", "JE": "EU",
-    "JM": "NA", "JO": "AS", "JP": "AS", "KE": "AF", "KG": "AS",
-    "KH": "AS", "KI": "OC", "KM": "AF", "KN": "NA", "KW": "AS",
-    "KY": "NA", "KZ": "AS", "LA": "AS", "LB": "AS", "LC": "NA",
-    "LI": "EU", "LK": "AS", "LR": "AF", "LS": "AF", "LT": "EU",
-    "LU": "EU", "LV": "EU", "LY": "AF", "MA": "AF", "MC": "EU",
-    "MD": "EU", "ME": "EU", "MG": "AF", "MH": "OC", "MK": "EU",
-    "ML": "AF", "MM": "AS", "MN": "AS", "MO": "AS", "MP": "OC",
-    "MQ": "NA", "MR": "AF", "MS": "NA", "MT": "EU", "MU": "AF",
-    "MV": "AS", "MW": "AF", "MX": "NA", "MY": "AS", "MZ": "AF",
-    "NA": "AF", "NC": "OC", "NE": "AF", "NF": "OC", "NG": "AF",
-    "NI": "NA", "NL": "EU", "NO": "EU", "NP": "AS", "NR": "OC",
-    "NU": "OC", "NZ": "OC", "OM": "AS", "PA": "NA", "PE": "SA",
-    "PF": "OC", "PG": "OC", "PH": "AS", "PK": "AS", "PL": "EU",
-    "PM": "NA", "PN": "OC", "PR": "NA", "PS": "AS", "PT": "EU",
-    "PW": "OC", "PY": "SA", "QA": "AS", "RE": "AF", "KR": "AS",
-    "KP": "AS", "VG": "NA", "SH": "AF", "RO": "EU", "RS": "EU",
-    "RU": "EU", "RW": "AF", "SA": "AS", "SB": "OC", "SC": "AF",
-    "SD": "AF", "SE": "EU", "SG": "AS", "SI": "EU", "SK": "EU",
-    "SL": "AF", "SM": "EU", "SN": "AF", "SO": "AF", "SR": "SA",
-    "SS": "AF", "ST": "AF", "SV": "NA", "SY": "AS", "SZ": "AF",
-    "TC": "NA", "TD": "AF", "TG": "AF", "TH": "AS", "TJ": "AS",
-    "TK": "OC", "TL": "AS", "TM": "AS", "TN": "AF", "TO": "OC",
-    "TR": "EU", "TT": "NA", "TV": "OC", "TW": "AS", "TZ": "AF",
-    "UA": "EU", "UG": "AF", "US": "NA", "VI": "NA", "UY": "SA",
-    "UZ": "AS", "VA": "EU", "VC": "NA", "VE": "SA", "VN": "AS",
-    "VU": "OC", "WS": "OC", "YE": "AS", "YT": "AF", "ZA": "AF",
-    "ZM": "AF", "ZW": "AF",
-}
-BASEKEY = "mozilla_tlm"
+NE_MAP = pd.read_csv(NE_MAP_PATH)
 
 
-# ioda + country code - country, then filter down to region
-# key: productid - different metrics (timeout etc)
-# region - tbc
-# gtr line 213 - expect diff tuples with the various values for diff regions.
-# country codes (regions) - hardcode first. should be ioda regionids/mozilla country codes
 def fetchData(projectid, starttime, endtime, region, saved):
     """
      Parameters:
@@ -118,7 +60,6 @@ def fetchData(projectid, starttime, endtime, region, saved):
         return 0
 
     fetched_country, fetched_region = process_mozilla_df(result_df)
-    print(fetched_country)
 
     # pytimeseries works best if we write all datapoints for a given timestamp
     # in a single batch, so we will save our fetched data into a dictionary
@@ -186,9 +127,7 @@ def get_query_string(start_time, end_time, region=None):
 
 
 def check_region_exists_mozilla(region):
-    # store ne_map as global var - keep calling it.
-    ne_map = pd.read_csv(NE_MAP_PATH)
-    if not (ne_map['country'].isin([region]).any()) or (ne_map['ioda_id'].isin([region]).any()):
+    if not (NE_MAP['country'].isin([region]).any()) or (NE_MAP['ioda_id'].isin([region]).any()):
         raise ValueError(f"Region {region} is not found in the Mozilla data.")
 
 
@@ -224,6 +163,7 @@ def process_mozilla_df(mozilla_df):
 
     # batch according to timestamp, and store region data as values
     region_batches = {timestamp: data.droplevel('datetime') for timestamp, data in region_agg_df.groupby('datetime')}
+
     region_agg_dict = {timestamp: timestamp_agg_df.to_dict(orient="index")
                        for timestamp, timestamp_agg_df in region_batches.items()}
     return (country_agg_dict, region_agg_dict)
@@ -316,5 +256,5 @@ if __name__ == "__main__":
     # args = parser.parse_args()
     #
     # main(args)
-    # args for fetchData: mozilla_table_name, projectid, starttime, endtime, region, saved):
+    fetchData(GCP_PROJECT_ID, None, None, region='US', saved={})
     pass
