@@ -53,4 +53,5 @@ CONTINENT_MAP = {
     "ZM": "AF", "ZW": "AF",
 }
 BASEKEY = "mozilla_tlm"
+IODA_API_COUNTRY_ENTITY_QUERY = 'https://api.ioda.inetintel.cc.gatech.edu/v2/entities/query?entityType=country'
 

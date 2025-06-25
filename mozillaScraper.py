@@ -1,16 +1,18 @@
 import logging, datetime, time, argparse
 
 import pandas as pd
+import requests
 # import pytimeseries
 
 from google.cloud import bigquery
 
-from constants import GCP_PROJECT_ID, NE_MAP_PATH, DEFAULT_LOOKBACK_PERIOD, CONTINENT_MAP, BASEKEY, MOZILLA_TABLE_NAME
+from constants import GCP_PROJECT_ID, NE_MAP_PATH, DEFAULT_LOOKBACK_PERIOD, CONTINENT_MAP, BASEKEY, MOZILLA_TABLE_NAME, \
+    IODA_API_COUNTRY_ENTITY_QUERY
 
 NE_MAPPING = pd.read_csv(NE_MAP_PATH)
 
 
-def fetchData(projectid, starttime, endtime, region, saved):
+def fetchData(projectid, starttime, endtime, country_code, saved):
     """
      Parameters:
           mozilla_table_name -- the table name to be queried that contains the Mozilla telemetry data
@@ -18,37 +20,38 @@ def fetchData(projectid, starttime, endtime, region, saved):
                         Datetime object)
           end_time -- the end of the time period to query for (as a
                         Datetime object)
-          region -- the ISO 2-letter country code for the region to query
-                    for, or the 4-digit IODA region ID.
+          country_code -- the ISO 2-letter country code for the country to query
+                    for
           saved -- the dictionary to save the fetched data into
     """
     # IODA uses a "continent.country" format to hierarchically structure
     # geographic time series so we need to add the appropriate continent
-    # for our requested region to the time series label.
-    if region not in CONTINENT_MAP:
-        logging.error("No continent mapping for %s?" % (region))
+    # for our requested country to the time series label.
+    if country_code not in CONTINENT_MAP:
+        logging.error("No continent mapping for %s." % (country_code))
         contcode = "??"
     else:
-        contcode = CONTINENT_MAP[region]
+        contcode = CONTINENT_MAP[country_code]
 
     client = bigquery.Client(project=projectid)
     query = ""
 
-    if region:
+    if country_code:
         try:
-            check_region_exists_mozilla(region)
-            query = get_query_string(starttime, endtime, region)
+            check_country_exists_mozilla(country_code)
+            query = get_query_string(starttime, endtime, country_code)
         except Exception as e:
-            logging.error("Region %s not found in Mozilla Telemetry data." % (region))
+            logging.error("Country %s not found in Mozilla Telemetry data." % (country_code))
+            return -1
     else:
-        # no region specified, obtain data for all countries.
+        # no country specified, obtain data for all countries.
         query = get_query_string(starttime, endtime)
 
     try:
         job = client.query(query)
         result_df = job.to_dataframe()
     except bigquery.exceptions.BigQueryError as e:
-        logging.error("Failed to get telemetry data from %s to %s: %s", str(starttime), str(endtime), str(e))
+        logging.error("Failed to get telemetry data for country %s from %s to %s: %s", country_code, str(starttime), str(endtime), str(e))
         return -1
     except Exception as e:
         logging.error("An unexpected error occurred from %s to %s: %s", str(starttime), str(endtime), str(e))
@@ -56,7 +59,7 @@ def fetchData(projectid, starttime, endtime, region, saved):
 
     time.sleep(0.1)
     if result_df.empty:
-        print("The telemetry data from %s to %s is None", str(starttime), str(endtime))
+        logging.error("No telemetry data for country %s from %s to %s.", country_code, str(starttime), str(endtime))
         return 0
 
     fetched_country, fetched_region = process_mozilla_df(result_df)
@@ -73,9 +76,9 @@ def fetchData(projectid, starttime, endtime, region, saved):
 
         for metric, metric_value in all_metrics.items():
             # This is the key that we're going to write into kafka for this
-            # region + product. They key must be encoded because pytimeseries
+            # country + product. They key must be encoded because pytimeseries
             # expects a bytes object for the key, not a string.
-            key = "%s.%s.%s.%s.%s.traffic" % (BASEKEY, contcode, 'country', region, metric)
+            key = "%s.%s.%s.%s.%s.traffic" % (BASEKEY, contcode, 'country', country_code, metric)
             key = key.encode()
 
             # The traffic data is stored as a normalised float (with 10 d.p. of
@@ -98,7 +101,7 @@ def fetchData(projectid, starttime, endtime, region, saved):
     return 1
 
 
-def get_query_string(start_time, end_time, region=None):
+def get_query_string(start_time, end_time, country_code=None):
     unknown_city_case = """
         CASE 
             WHEN city = 'unknown' AND (geo_subdivision1 IS NOT NULL AND geo_subdivision1 != '')
@@ -121,14 +124,15 @@ def get_query_string(start_time, end_time, region=None):
     WHERE datetime BETWEEN TIMESTAMP('{start_time}') AND TIMESTAMP('{end_time}')
     """
 
-    if region:
-        return base_query + f"\nAND country = '{region}'"
+    if country_code:
+        return base_query + f"\nAND country = '{country_code}'"
     return base_query
 
 
-def check_region_exists_mozilla(region):
-    if not (NE_MAPPING['country'].isin([region]).any()) or (NE_MAPPING['ioda_id'].isin([region]).any()):
-        raise ValueError(f"Region {region} is not found in the Mozilla data.")
+def check_country_exists_mozilla(country_code):
+    # 20 Jun - check if we wanted to include ioda_id for checking
+    if not (NE_MAPPING['country'].isin([country_code]).any()):
+        raise ValueError(f"Country {country_code} is not found in the Mozilla data.")
 
 
 def process_mozilla_df(mozilla_df):
@@ -209,15 +213,15 @@ def main(args):
             endtime - starttime < datetime.timedelta(days=DEFAULT_LOOKBACK_PERIOD)):
         starttime = endtime - datetime.timedelta(days=DEFAULT_LOOKBACK_PERIOD)
 
-    # format timestamps into appropriate strings for querying
-    endtime = endtime.astimezone(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-    starttime = starttime.astimezone(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    response = requests.get(IODA_API_COUNTRY_ENTITY_QUERY)
 
-    # for p in products:
-    #     print(p, starttime, file=sys.stderr)
-    #     for r in regions:
-    #         ret = fetchData(trafrepo, starttime, endtime, p, r, datadict)
-    ret = fetchData(MOZILLA_TABLE_NAME, args.projectid, starttime, endtime, args.region, datadict)
+    if response.status_code == 200:
+        data = response.json()['data']
+        country_codes = [dictionary['code'] for dictionary in data]
+        for country in country_codes:
+            ret = fetchData(args.projectid, starttime, endtime, country, datadict)
+    else:
+        print(f"IODA API Query Request to obtain all countries failed with status code {response.status_code}")
 
     for ts, dat in sorted(datadict.items()):
         # If our fetched time range was expanded out to a full day, now
@@ -241,19 +245,17 @@ def main(args):
 
 
 if __name__ == "__main__":
-    # parser = argparse.ArgumentParser(
-    #     description='Continually fetches Mozilla telemetry data from the Google Bigquery and writes it into kafka')
-    #
-    # parser.add_argument("--broker", type=str, required=True, help="The kafka broker to connect to")
-    # parser.add_argument("--channel", type=str, required=True, help="Kafka channel to write the data into")
-    # parser.add_argument("--topicprefix", type=str, required=True, help="Topic prefix to prepend to each Kafka message")
-    # parser.add_argument("--projectid", type=str, required=True, help="The Google Cloud project ID")
-    # parser.add_argument("--starttime", type=int, help="Fetch traffic data starting from the given Unix timestamp. \
-    #                                                                 If not provided, defaults to 2 days before endtime.")
-    # parser.add_argument("--endtime", type=int, help="Fetch traffic data up until the given Unix timestamp. \
-    #                                                               If not provided, defaults to the current time.")
-    # args = parser.parse_args()
-    #
-    # main(args)
-    fetchData(GCP_PROJECT_ID, None, None, region='ES', saved={})
+    # 20 Jun - dont specify country for now
+    parser = argparse.ArgumentParser(
+        description='Continually fetches Mozilla telemetry data from the Google Bigquery and writes it into kafka')
+
+    parser.add_argument("--broker", type=str, required=True, help="The kafka broker to connect to")
+    parser.add_argument("--channel", type=str, required=True, help="Kafka channel to write the data into")
+    parser.add_argument("--topicprefix", type=str, required=True, help="Topic prefix to prepend to each Kafka message")
+    parser.add_argument("--projectid", type=str, required=True, help="The Google Cloud project ID")
+    parser.add_argument("--starttime", type=int, help="Fetch traffic data starting from the given Unix timestamp. \
+                                                                    If not provided, defaults to 2 days before endtime.")
+    parser.add_argument("--endtime", type=int, help="Fetch traffic data up until the given Unix timestamp. \
+                                                                  If not provided, defaults to the current time.")
+    args = parser.parse_args()
     pass
