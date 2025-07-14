@@ -1,16 +1,19 @@
 import logging, datetime, time, argparse, requests
 import pandas as pd
-import _pytimeseries
+# import _pytimeseries
 from google.cloud import bigquery
 
-
-from constants import GCP_PROJECT_ID, NE_MAP_PATH, DEFAULT_LOOKBACK_PERIOD, CONTINENT_MAP, BASEKEY, MOZILLA_TABLE_NAME, \
+from constants import NE_MAP_PATH, DEFAULT_LOOKBACK_PERIOD, CONTINENT_COUNTRY_MAP, BASEKEY, MOZILLA_TABLE_NAME, \
     IODA_API_COUNTRY_ENTITY_QUERY
 
 NE_MAPPING = pd.read_csv(NE_MAP_PATH)
+# region-aggregated data is trickier, we need to map and aggregate the data according to region code
+# convert ioda_ids to ints. if not available, convert to NaN
+NE_MAPPING.ioda_id = pd.to_numeric(NE_MAPPING.ioda_id, errors='coerce').astype('Int64')
+NE_MAPPING['continent'] = NE_MAPPING['country'].map(CONTINENT_COUNTRY_MAP)
+CONTINENT_REGION_MAP = NE_MAPPING.dropna().set_index('ioda_id')['continent'].to_dict()
 
-# besides returning code, also return time, or take in dict & update
-# calculate total time taken outside function
+
 def fetchData(projectid, starttime, endtime, country_code, saved):
     """
      Parameters:
@@ -39,7 +42,8 @@ def fetchData(projectid, starttime, endtime, country_code, saved):
         job = client.query(query)
         result_df = job.to_dataframe()
     except bigquery.exceptions.BigQueryError as e:
-        logging.error("Failed to get telemetry data for country %s from %s to %s: %s", country_code, str(starttime), str(endtime), str(e))
+        logging.error("BigQueryError: Failed to get telemetry data from %s to %s: %s", str(starttime), str(endtime),
+                      str(e))
         return -1
     except Exception as e:
         logging.error("An unexpected error occurred from %s to %s: %s", str(starttime), str(endtime), str(e))
@@ -47,12 +51,11 @@ def fetchData(projectid, starttime, endtime, country_code, saved):
 
     time.sleep(0.1)
     if result_df.empty:
-        logging.error("No telemetry data for country %s from %s to %s.", country_code, str(starttime), str(endtime))
+        logging.error("No telemetry data for from %s to %s.", str(starttime), str(endtime))
         return 0
 
     fetched_country, fetched_region = process_mozilla_df(result_df)
 
-    start_process_for_kafka = time.time()
     # pytimeseries works best if we write all datapoints for a given timestamp
     # in a single batch, so we will save our fetched data into a dictionary
     # keyed by timestamp. Once we've fetched everything, then we can walk
@@ -64,11 +67,11 @@ def fetchData(projectid, starttime, endtime, country_code, saved):
             # IODA uses a "continent.country" format to hierarchically structure
             # geographic time series so we need to add the appropriate continent
             # for our requested country to the time series label.
-            if country_code not in CONTINENT_MAP:
+            if country_code not in CONTINENT_COUNTRY_MAP:
                 logging.error("No continent mapping for %s." % (country_code))
                 contcode = "??"
             else:
-                contcode = CONTINENT_MAP[country_code]
+                contcode = CONTINENT_COUNTRY_MAP[country_code]
             ts = int(k.timestamp())
 
             if ts not in saved:
@@ -93,6 +96,12 @@ def fetchData(projectid, starttime, endtime, country_code, saved):
     for timestamp, region_data in fetched_region.items():
         for ioda_id, all_metrics in region_data.items():
             ts = int(timestamp.timestamp())
+
+            if ioda_id not in NE_MAPPING['ioda_id'].dropna().values:
+                logging.error("No continent mapping for region %s." % (ioda_id))
+                contcode = "??"
+            else:
+                contcode = CONTINENT_REGION_MAP[ioda_id]
 
             if ts not in saved:
                 saved[ts] = []
@@ -136,12 +145,14 @@ def get_query_string(start_time, end_time, country_code=None):
         return base_query + f"\nAND country = '{country_code}'"
 
     # query for all countries obtained from the IODA API call
-    ioda_countries = ""
     response = requests.get(IODA_API_COUNTRY_ENTITY_QUERY)
     if response.status_code == 200:
         data = response.json()['data']
         country_codes = [dictionary['code'] for dictionary in data]
         ioda_countries = ", ".join(f'"{country}"' for country in country_codes)
+    else:
+        logging.error(f"IODA API Query Request to obtain all countries failed with status code {response.status_code}.")
+        return ""
     return base_query + f"\nAND country in ({ioda_countries})"
 
 
@@ -160,7 +171,6 @@ def process_mozilla_df(mozilla_df):
     # For counting number of cities and showing list of cities only, which can be used for debugging.
     # The list of cities will be dropped in the returned data.
     city_col_debugging = ['adjusted_city']
-    print(country_agg_df)
     country_agg_df = (transform_list_data_and_add_city_count(city_col_debugging, country_agg_df)
                       .set_index(['datetime', 'country']).drop(['adjusted_city'], axis=1))
 
@@ -234,15 +244,7 @@ def main(args):
             endtime - starttime < datetime.timedelta(days=DEFAULT_LOOKBACK_PERIOD)):
         starttime = endtime - datetime.timedelta(days=DEFAULT_LOOKBACK_PERIOD)
 
-    response = requests.get(IODA_API_COUNTRY_ENTITY_QUERY)
-
-    if response.status_code == 200:
-        data = response.json()['data']
-        country_codes = [dictionary['code'] for dictionary in data]
-        for country in country_codes:
-            ret = fetchData(args.projectid, starttime, endtime, country, datadict)
-    else:
-        print(f"IODA API Query Request to obtain all countries failed with status code {response.status_code}")
+    ret = fetchData(args.projectid, starttime, endtime, None, datadict)
 
     for ts, dat in sorted(datadict.items()):
         # If our fetched time range was expanded out to a full day, now
@@ -265,13 +267,39 @@ def main(args):
     return
 
 
+def test_all_countries(args):
+    start_all = time.time()
+    datadict = {}
+
+    if args.endtime:
+        endtime = datetime.datetime.fromtimestamp(args.endtime)
+    else:
+        endtime = datetime.datetime.now()
+
+    if args.starttime:
+        starttime = datetime.datetime.fromtimestamp(args.starttime)
+    else:
+        starttime = endtime - datetime.timedelta(days=DEFAULT_LOOKBACK_PERIOD)
+
+    # Due to a bug in the netanalysis API, we must fetch at least one
+    # days worth of data -- otherwise we will generate a 400 Bad Request.
+    if (starttime > endtime or \
+            endtime - starttime < datetime.timedelta(days=DEFAULT_LOOKBACK_PERIOD)):
+        starttime = endtime - datetime.timedelta(days=DEFAULT_LOOKBACK_PERIOD)
+
+    fetchData(args.projectid, starttime, endtime, None, saved=datadict)
+    print(datadict)
+    print(f'Time taken to fetch & save data for all countries: {time.time() - start_all}s')
+    return
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description='Continually fetches Mozilla telemetry data from Google Bigquery and writes it into kafka')
-
-    parser.add_argument("--broker", type=str, required=True, help="The kafka broker to connect to")
-    parser.add_argument("--channel", type=str, required=True, help="Kafka channel to write the data into")
-    parser.add_argument("--topicprefix", type=str, required=True, help="Topic prefix to prepend to each Kafka message")
+    #
+    # parser.add_argument("--broker", type=str, required=True, help="The kafka broker to connect to")
+    # parser.add_argument("--channel", type=str, required=True, help="Kafka channel to write the data into")
+    # parser.add_argument("--topicprefix", type=str, required=True, help="Topic prefix to prepend to each Kafka message")
     parser.add_argument("--projectid", type=str, required=True, help="The Google Cloud project ID")
     parser.add_argument("--starttime", type=int, help="Fetch traffic data starting from the given Unix timestamp. \
                                                                     If not provided, defaults to 2 days before endtime.")
@@ -279,4 +307,7 @@ if __name__ == "__main__":
                                                                   If not provided, defaults to the current time.")
     args = parser.parse_args()
 
-    main(args)
+    test_all_countries(args)
+    # main(args)
+
+    pass
