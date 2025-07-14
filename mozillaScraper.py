@@ -9,9 +9,9 @@ from constants import NE_MAP_PATH, DEFAULT_LOOKBACK_PERIOD, CONTINENT_COUNTRY_MA
 NE_MAPPING = pd.read_csv(NE_MAP_PATH)
 # region-aggregated data is trickier, we need to map and aggregate the data according to region code
 # convert ioda_ids to ints. if not available, convert to NaN
-NE_MAPPING.ioda_id = pd.to_numeric(NE_MAPPING.ioda_id, errors='coerce').astype('Int64')
+NE_MAPPING['ioda_id'] = pd.to_numeric(NE_MAPPING['ioda_id'], errors='coerce').astype('Int64')
 NE_MAPPING['continent'] = NE_MAPPING['country'].map(CONTINENT_COUNTRY_MAP)
-CONTINENT_REGION_MAP = NE_MAPPING.dropna().set_index('ioda_id')['continent'].to_dict()
+CONTINENT_REGION_MAP = NE_MAPPING.dropna(subset=['ioda_id']).set_index('ioda_id')['continent'].to_dict()
 
 
 def fetchData(projectid, starttime, endtime, country_code, saved):
@@ -97,7 +97,7 @@ def fetchData(projectid, starttime, endtime, country_code, saved):
         for ioda_id, all_metrics in region_data.items():
             ts = int(timestamp.timestamp())
 
-            if ioda_id not in NE_MAPPING['ioda_id'].dropna().values:
+            if ioda_id not in NE_MAPPING['ioda_id'].values:
                 logging.error("No continent mapping for region %s." % (ioda_id))
                 contcode = "??"
             else:
@@ -114,7 +114,6 @@ def fetchData(projectid, starttime, endtime, country_code, saved):
                     saved[ts].append((key, int(10000000000 * metric_value)))
                 else:
                     saved[ts].append((key, int(metric_value)))
-    # TODO: check for any sensitive credentials in the script
     return 1
 
 
@@ -178,11 +177,9 @@ def process_mozilla_df(mozilla_df):
 
     country_agg_dict = {timestamp: timestamp_agg_df.to_dict(orient="index")
                        for timestamp, timestamp_agg_df in country_batches.items()}
-    # country_agg_dict = country_agg_df.to_dict(orient="index")
 
     # region-aggregated data is trickier, we need to map and aggregate the data according to region code
     # convert ioda_ids to ints. if not available, convert to NaN
-    NE_MAPPING.ioda_id = pd.to_numeric(NE_MAPPING.ioda_id, errors='coerce').astype('Int64')
     mozilla_with_ioda_id_df = mozilla_df.merge(NE_MAPPING,
                                                on=['country', 'geo_subdivision1', 'geo_subdivision2'])
 
@@ -267,39 +264,13 @@ def main(args):
     return
 
 
-def test_all_countries(args):
-    start_all = time.time()
-    datadict = {}
-
-    if args.endtime:
-        endtime = datetime.datetime.fromtimestamp(args.endtime)
-    else:
-        endtime = datetime.datetime.now()
-
-    if args.starttime:
-        starttime = datetime.datetime.fromtimestamp(args.starttime)
-    else:
-        starttime = endtime - datetime.timedelta(days=DEFAULT_LOOKBACK_PERIOD)
-
-    # Due to a bug in the netanalysis API, we must fetch at least one
-    # days worth of data -- otherwise we will generate a 400 Bad Request.
-    if (starttime > endtime or \
-            endtime - starttime < datetime.timedelta(days=DEFAULT_LOOKBACK_PERIOD)):
-        starttime = endtime - datetime.timedelta(days=DEFAULT_LOOKBACK_PERIOD)
-
-    fetchData(args.projectid, starttime, endtime, None, saved=datadict)
-    print(datadict)
-    print(f'Time taken to fetch & save data for all countries: {time.time() - start_all}s')
-    return
-
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description='Continually fetches Mozilla telemetry data from Google Bigquery and writes it into kafka')
-    #
-    # parser.add_argument("--broker", type=str, required=True, help="The kafka broker to connect to")
-    # parser.add_argument("--channel", type=str, required=True, help="Kafka channel to write the data into")
-    # parser.add_argument("--topicprefix", type=str, required=True, help="Topic prefix to prepend to each Kafka message")
+
+    parser.add_argument("--broker", type=str, required=True, help="The kafka broker to connect to")
+    parser.add_argument("--channel", type=str, required=True, help="Kafka channel to write the data into")
+    parser.add_argument("--topicprefix", type=str, required=True, help="Topic prefix to prepend to each Kafka message")
     parser.add_argument("--projectid", type=str, required=True, help="The Google Cloud project ID")
     parser.add_argument("--starttime", type=int, help="Fetch traffic data starting from the given Unix timestamp. \
                                                                     If not provided, defaults to 2 days before endtime.")
@@ -307,7 +278,4 @@ if __name__ == "__main__":
                                                                   If not provided, defaults to the current time.")
     args = parser.parse_args()
 
-    test_all_countries(args)
-    # main(args)
-
-    pass
+    main(args)
