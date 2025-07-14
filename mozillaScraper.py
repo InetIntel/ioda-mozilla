@@ -1,10 +1,8 @@
-import logging, datetime, time, argparse
-
+import logging, datetime, time, argparse, requests
 import pandas as pd
-import requests
-# import pytimeseries
-
+import _pytimeseries
 from google.cloud import bigquery
+
 
 from constants import GCP_PROJECT_ID, NE_MAP_PATH, DEFAULT_LOOKBACK_PERIOD, CONTINENT_MAP, BASEKEY, MOZILLA_TABLE_NAME, \
     IODA_API_COUNTRY_ENTITY_QUERY
@@ -16,25 +14,14 @@ NE_MAPPING = pd.read_csv(NE_MAP_PATH)
 def fetchData(projectid, starttime, endtime, country_code, saved):
     """
      Parameters:
-          mozilla_table_name -- the table name to be queried that contains the Mozilla telemetry data
+          projectid -- the project ID for the project in Google Cloud Platform.
           start_time -- the start of the time period to query for (as a
                         Datetime object)
           end_time -- the end of the time period to query for (as a
                         Datetime object)
-          country_code -- the ISO 2-letter country code for the country to query
-                    for
+          country_code -- the ISO 2-letter country code for the country to query for
           saved -- the dictionary to save the fetched data into
     """
-    # IODA uses a "continent.country" format to hierarchically structure
-    # geographic time series so we need to add the appropriate continent
-    # for our requested country to the time series label.
-    if country_code not in CONTINENT_MAP:
-        logging.error("No continent mapping for %s." % (country_code))
-        contcode = "??"
-    else:
-        contcode = CONTINENT_MAP[country_code]
-
-    start_fetch = time.time()
     client = bigquery.Client(project=projectid)
 
     if country_code:
@@ -64,15 +51,19 @@ def fetchData(projectid, starttime, endtime, country_code, saved):
         return 0
 
     fetched_country, fetched_region = process_mozilla_df(result_df)
-    print(f'Time taken to fetch and process data: {time.time() - start_fetch}s')
 
     start_process_for_kafka = time.time()
     # pytimeseries works best if we write all datapoints for a given timestamp
     # in a single batch, so we will save our fetched data into a dictionary
     # keyed by timestamp. Once we've fetched everything, then we can walk
     # through that dictionary to emit the data in timestamp order.
+    # We iterate through two different sets of fetched data, one for country-aggregated data
+    # and the other for region-aggregated data.
     for k, all_metrics in fetched_country.items():
         for country_code, metric_data in all_metrics.items():
+            # IODA uses a "continent.country" format to hierarchically structure
+            # geographic time series so we need to add the appropriate continent
+            # for our requested country to the time series label.
             if country_code not in CONTINENT_MAP:
                 logging.error("No continent mapping for %s." % (country_code))
                 contcode = "??"
@@ -84,15 +75,16 @@ def fetchData(projectid, starttime, endtime, country_code, saved):
                 saved[ts] = []
 
             for metric, metric_value in metric_data.items():
-            # This is the key that we're going to write into kafka for this
-            # country + product. They key must be encoded because pytimeseries
-            # expects a bytes object for the key, not a string.
+                # This is the key that we're going to write into kafka for this
+                # country + product. They key must be encoded because pytimeseries
+                # expects a bytes object for the key, not a string.
                 key = "%s.%s.%s.%s.%s" % (BASEKEY, contcode, 'country', country_code, metric)
                 key = key.encode()
 
                 # The traffic data is stored as a normalised float (with 10 d.p. of
-                # precision -- we'd rather deal with integers so scale it up
-                # 26 Jun - maybe do not multiply city count with factor.
+                # precision -- we'd rather deal with integers so scale it up.
+                # The only exception is the 'city_count' metric,
+                # where we use the original value from the data.
                 if metric != 'city_count':
                     saved[ts].append((key, int(10000000000 * metric_value)))
                 else:
@@ -109,24 +101,15 @@ def fetchData(projectid, starttime, endtime, country_code, saved):
                 key = "%s.%s.%s.%s.%s" % (BASEKEY, contcode, 'region', ioda_id, metric)
                 key = key.encode()
 
-                # 26 Jun - maybe do not multiply city count with factor.
                 if metric != 'city_count':
                     saved[ts].append((key, int(10000000000 * metric_value)))
                 else:
                     saved[ts].append((key, int(metric_value)))
-    print(f'Time taken to process data for kafka: {time.time() - start_process_for_kafka}s')
+    # TODO: check for any sensitive credentials in the script
     return 1
 
 
 def get_query_string(start_time, end_time, country_code=None):
-    ioda_countries = ""
-    response = requests.get(IODA_API_COUNTRY_ENTITY_QUERY)
-    if response.status_code == 200:
-        data = response.json()['data']
-        country_codes = [dictionary['code'] for dictionary in data]
-        ioda_countries = ", ".join(f'"{country}"' for country in country_codes)
-    print(ioda_countries)
-
     unknown_city_case = """
         CASE 
             WHEN city = 'unknown' AND (geo_subdivision1 IS NOT NULL AND geo_subdivision1 != '')
@@ -147,12 +130,19 @@ def get_query_string(start_time, end_time, country_code=None):
            {unknown_city_case}
     FROM {MOZILLA_TABLE_NAME}
     WHERE datetime BETWEEN TIMESTAMP('{start_time}') AND TIMESTAMP('{end_time}')
-    AND country in ({ioda_countries})
     """
 
-    # if country_code:
-    #     return base_query + f"\nAND country = '{country_code}'"
-    return base_query
+    if country_code:
+        return base_query + f"\nAND country = '{country_code}'"
+
+    # query for all countries obtained from the IODA API call
+    ioda_countries = ""
+    response = requests.get(IODA_API_COUNTRY_ENTITY_QUERY)
+    if response.status_code == 200:
+        data = response.json()['data']
+        country_codes = [dictionary['code'] for dictionary in data]
+        ioda_countries = ", ".join(f'"{country}"' for country in country_codes)
+    return base_query + f"\nAND country in ({ioda_countries})"
 
 
 def check_country_exists_mozilla(country_code):
@@ -167,12 +157,10 @@ def process_mozilla_df(mozilla_df):
         "adjusted_city": lambda city: list(set(city)),
     }).reset_index()
 
-    # for counting number of cities and showing list of cities only,
-    # List of cities will be dropped in eventual time series.
+    # For counting number of cities and showing list of cities only, which can be used for debugging.
+    # The list of cities will be dropped in the returned data.
     city_col_debugging = ['adjusted_city']
     print(country_agg_df)
-    # country_agg_df = (transform_list_data_and_add_city_count(city_col_debugging, country_agg_df)
-    #                   .set_index('datetime').drop(['country', 'adjusted_city'], axis=1))
     country_agg_df = (transform_list_data_and_add_city_count(city_col_debugging, country_agg_df)
                       .set_index(['datetime', 'country']).drop(['adjusted_city'], axis=1))
 
@@ -202,7 +190,7 @@ def process_mozilla_df(mozilla_df):
 
     region_agg_dict = {timestamp: timestamp_agg_df.to_dict(orient="index")
                        for timestamp, timestamp_agg_df in region_batches.items()}
-    return (country_agg_dict, region_agg_dict)
+    return country_agg_dict, region_agg_dict
 
 
 def transform_list_data_and_add_city_count(cols, df):
@@ -277,49 +265,13 @@ def main(args):
     return
 
 
-def test_all_countries(args):
-    start_all = time.time()
-    datadict = {}
-
-    if args.endtime:
-        endtime = datetime.datetime.fromtimestamp(args.endtime)
-    else:
-        endtime = datetime.datetime.now()
-
-    if args.starttime:
-        starttime = datetime.datetime.fromtimestamp(args.starttime)
-    else:
-        starttime = endtime - datetime.timedelta(days=DEFAULT_LOOKBACK_PERIOD)
-
-    # Due to a bug in the netanalysis API, we must fetch at least one
-    # days worth of data -- otherwise we will generate a 400 Bad Request.
-    if (starttime > endtime or \
-            endtime - starttime < datetime.timedelta(days=DEFAULT_LOOKBACK_PERIOD)):
-        starttime = endtime - datetime.timedelta(days=DEFAULT_LOOKBACK_PERIOD)
-
-    fetchData(args.projectid, starttime, endtime, None, saved=datadict)
-    # response = requests.get(IODA_API_COUNTRY_ENTITY_QUERY)
-
-    # if response.status_code == 200:
-    #     data = response.json()['data']
-    #     country_codes = [dictionary['code'] for dictionary in data]
-    #     for country in country_codes:
-    #         ret = fetchData(args.projectid, starttime, endtime, country, datadict)
-    # else:
-    #     print(f"IODA API Query Request to obtain all countries failed with status code {response.status_code}")
-
-    print(datadict)
-    print(f'Time taken to fetch & save data for all countries: {time.time() - start_all}s')
-    return
-
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description='Continually fetches Mozilla telemetry data from Google Bigquery and writes it into kafka')
-    #
-    # parser.add_argument("--broker", type=str, required=True, help="The kafka broker to connect to")
-    # parser.add_argument("--channel", type=str, required=True, help="Kafka channel to write the data into")
-    # parser.add_argument("--topicprefix", type=str, required=True, help="Topic prefix to prepend to each Kafka message")
+
+    parser.add_argument("--broker", type=str, required=True, help="The kafka broker to connect to")
+    parser.add_argument("--channel", type=str, required=True, help="Kafka channel to write the data into")
+    parser.add_argument("--topicprefix", type=str, required=True, help="Topic prefix to prepend to each Kafka message")
     parser.add_argument("--projectid", type=str, required=True, help="The Google Cloud project ID")
     parser.add_argument("--starttime", type=int, help="Fetch traffic data starting from the given Unix timestamp. \
                                                                     If not provided, defaults to 2 days before endtime.")
@@ -327,7 +279,4 @@ if __name__ == "__main__":
                                                                   If not provided, defaults to the current time.")
     args = parser.parse_args()
 
-    test_all_countries(args)
-    # main(args)
-
-    pass
+    main(args)
