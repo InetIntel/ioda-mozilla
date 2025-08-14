@@ -1,6 +1,5 @@
-GCP_PROJECT_ID = "<YOUR_PROJECT_ID>"
 MOZILLA_TABLE_NAME = "moz-fx-data-shared-prod.internet_outages.global_outages_v2"
-NE_MAP_PATH = "./data/mozilla_to_ne_map_20250325200212.csv"
+NE_MAP_PATH = "./mozilla_to_ne_map_20250325200212.csv"
 DEFAULT_LOOKBACK_PERIOD = 2  # in days
 # continent map for topic string
 CONTINENT_COUNTRY_MAP = {

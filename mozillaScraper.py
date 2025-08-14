@@ -1,6 +1,8 @@
+#!/usr/bin/env python3
+
 import logging, datetime, time, argparse, requests
 import pandas as pd
-# import _pytimeseries
+import _pytimeseries
 from google.cloud import bigquery
 
 from constants import NE_MAP_PATH, DEFAULT_LOOKBACK_PERIOD, CONTINENT_COUNTRY_MAP, BASEKEY, MOZILLA_TABLE_NAME, \
@@ -14,7 +16,7 @@ NE_MAPPING['continent'] = NE_MAPPING['country'].map(CONTINENT_COUNTRY_MAP)
 CONTINENT_REGION_MAP = NE_MAPPING.dropna(subset=['ioda_id']).set_index('ioda_id')['continent'].to_dict()
 
 
-def fetchData(projectid, starttime, endtime, country_code, saved):
+def fetchData(projectid, starttime, endtime, country_code, saved, debug):
     """
      Parameters:
           projectid -- the project ID for the project in Google Cloud Platform.
@@ -114,6 +116,8 @@ def fetchData(projectid, starttime, endtime, country_code, saved):
                     saved[ts].append((key, int(10000000000 * metric_value)))
                 else:
                     saved[ts].append((key, int(metric_value)))
+    if debug:
+        print("data saved: ", saved)
     return 1
 
 
@@ -210,19 +214,20 @@ def transform_list_data_and_add_city_count(cols, df):
 def main(args):
     datadict = {}
 
-    # Boiler-plate libtimeseries setup for a kafka output
-    pyts = _pytimeseries.Timeseries()
-    be = pyts.get_backend_by_name('kafka')
-    if not be:
-        logging.error('Unable to find pytimeseries kafka backend')
-        return -1
-    if not pyts.enable_backend(be, "-b %s -c %s -f ascii -p %s" % ( \
-            args.broker, args.channel, args.topicprefix)):
-        logging.error('Unable to initialise pytimeseries kafka backend')
-        return -1
+    if not args.debug:
+        # Boiler-plate libtimeseries setup for a kafka output
+        pyts = _pytimeseries.Timeseries()
+        be = pyts.get_backend_by_name('kafka')
+        if not be:
+            logging.error('Unable to find pytimeseries kafka backend')
+            return -1
+        if not pyts.enable_backend(be, "-b %s -c %s -f ascii -p %s" % ( \
+                args.broker, args.channel, args.topicprefix)):
+            logging.error('Unable to initialise pytimeseries kafka backend')
+            return -1
 
-    kp = pyts.new_keypackage(reset=False, disable=True)
-    # Boiler-plate ends
+        kp = pyts.new_keypackage(reset=False, disable=True)
+        # Boiler-plate ends
 
     # Determine the start and end time periods for our upcoming query
     if args.endtime:
@@ -241,26 +246,27 @@ def main(args):
             endtime - starttime < datetime.timedelta(days=DEFAULT_LOOKBACK_PERIOD)):
         starttime = endtime - datetime.timedelta(days=DEFAULT_LOOKBACK_PERIOD)
 
-    ret = fetchData(args.projectid, starttime, endtime, None, datadict)
+    ret = fetchData(args.projectid, starttime, endtime, None, datadict, args.debug)
 
-    for ts, dat in sorted(datadict.items()):
-        # If our fetched time range was expanded out to a full day, now
-        # is a good time for us to ignore any time periods that the user
-        # didn't explicitly ask for
-        if args.starttime and ts < args.starttime:
-            continue
+    if not args.debug:
+        for ts, dat in sorted(datadict.items()):
+            # If our fetched time range was expanded out to a full day, now
+            # is a good time for us to ignore any time periods that the user
+            # didn't explicitly ask for
+            if args.starttime and ts < args.starttime:
+                continue
 
-        # pytimeseries code to save each key and value for this timestamp
-        for val in dat:
-            idx = kp.get_key(val[0])
-            if idx is None:
-                idx = kp.add_key(val[0])
-            else:
-                kp.enable_key(idx)
-            kp.set(idx, val[1])
+            # pytimeseries code to save each key and value for this timestamp
+            for val in dat:
+                idx = kp.get_key(val[0])
+                if idx is None:
+                    idx = kp.add_key(val[0])
+                else:
+                    kp.enable_key(idx)
+                kp.set(idx, val[1])
 
-        # Write to the kafka queue
-        kp.flush(ts)
+            # Write to the kafka queue
+            kp.flush(ts)
     return
 
 
@@ -276,6 +282,8 @@ if __name__ == "__main__":
                                                                     If not provided, defaults to 2 days before endtime.")
     parser.add_argument("--endtime", type=int, help="Fetch traffic data up until the given Unix timestamp. \
                                                                   If not provided, defaults to the current time.")
+    parser.add_argument("--debug", type=str, help="Enables debug mode for printing data.")
+
     args = parser.parse_args()
 
     main(args)
