@@ -1,9 +1,8 @@
-GCP_PROJECT_ID = "ioda-spr25"
 MOZILLA_TABLE_NAME = "moz-fx-data-shared-prod.internet_outages.global_outages_v2"
-NE_MAP_PATH = "./data/mozilla_to_ne_map_20250325200212.csv"
+NE_MAP_PATH = "./mozilla_to_ne_map_20250325200212.csv"
 DEFAULT_LOOKBACK_PERIOD = 2  # in days
 # continent map for topic string
-CONTINENT_MAP = {
+CONTINENT_COUNTRY_MAP = {
     "AD": "EU", "AE": "AS", "AF": "AS", "AG": "NA", "AI": "NA",
     "AL": "EU", "AM": "AS", "AO": "AF", "AQ": "AN", "AR": "SA",
     "AT": "EU", "AU": "OC", "AW": "NA", "AX": "EU", "AZ": "AS",
