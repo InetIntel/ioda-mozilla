@@ -48,8 +48,8 @@ CONTINENT_COUNTRY_MAP = {
     "TR": "EU", "TT": "NA", "TV": "OC", "TW": "AS", "TZ": "AF",
     "UA": "EU", "UG": "AF", "US": "NA", "VI": "NA", "UY": "SA",
     "UZ": "AS", "VA": "EU", "VC": "NA", "VE": "SA", "VN": "AS",
-    "VU": "OC", "WS": "OC", "YE": "AS", "YT": "AF", "ZA": "AF",
-    "ZM": "AF", "ZW": "AF",
+    "VU": "OC", "WS": "OC", "XK": "EU", "YE": "AS", "YT": "AF", 
+    "ZA": "AF", "ZM": "AF", "ZW": "AF",
 }
 BASEKEY = "mozilla_tlm"
 IODA_API_COUNTRY_ENTITY_QUERY = 'https://api.ioda.inetintel.cc.gatech.edu/v2/entities/query?entityType=country'
