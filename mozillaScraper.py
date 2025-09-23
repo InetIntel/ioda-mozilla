@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 
 import logging, datetime, time, argparse, requests
+import os
+
 import pandas as pd
 import _pytimeseries
 from google.cloud import bigquery
@@ -16,7 +18,7 @@ NE_MAPPING['continent'] = NE_MAPPING['country'].map(CONTINENT_COUNTRY_MAP)
 CONTINENT_REGION_MAP = NE_MAPPING.dropna(subset=['ioda_id']).set_index('ioda_id')['continent'].to_dict()
 
 
-def fetchData(projectid, starttime, endtime, country_code, saved, debug):
+def fetchData(projectid, starttime, endtime, country_code, datadict, debug, savedata):
     """
      Parameters:
           projectid -- the project ID for the project in Google Cloud Platform.
@@ -39,10 +41,18 @@ def fetchData(projectid, starttime, endtime, country_code, saved, debug):
     else:
         # no country specified, obtain data for all countries.
         query = get_query_string(starttime, endtime)
+        country_code = "all"
 
     try:
         job = client.query(query)
         result_df = job.to_dataframe()
+        if savedata:
+            if not os.path.exists('data'):
+                os.makedirs('data')
+            save_filename = f'data/mozilla_data_{country_code}_start_{starttime}_end_{endtime}.csv'
+            result_df.to_csv(save_filename)
+            print("mozilla data saved in: ", save_filename)
+            return 0
     except bigquery.exceptions.BigQueryError as e:
         logging.error("BigQueryError: Failed to get telemetry data from %s to %s: %s", str(starttime), str(endtime),
                       str(e))
@@ -76,8 +86,8 @@ def fetchData(projectid, starttime, endtime, country_code, saved, debug):
                 contcode = CONTINENT_COUNTRY_MAP[country_code]
             ts = int(k.timestamp())
 
-            if ts not in saved:
-                saved[ts] = []
+            if ts not in datadict:
+                datadict[ts] = []
 
             for metric, metric_value in metric_data.items():
                 # This is the key that we're going to write into kafka for this
@@ -91,9 +101,9 @@ def fetchData(projectid, starttime, endtime, country_code, saved, debug):
                 # The only exception is the 'city_count' metric,
                 # where we use the original value from the data.
                 if metric != 'city_count':
-                    saved[ts].append((key, int(10000000000 * metric_value)))
+                    datadict[ts].append((key, int(10000000000 * metric_value)))
                 else:
-                    saved[ts].append((key, int(metric_value)))
+                    datadict[ts].append((key, int(metric_value)))
 
     for timestamp, region_data in fetched_region.items():
         for ioda_id, all_metrics in region_data.items():
@@ -105,19 +115,19 @@ def fetchData(projectid, starttime, endtime, country_code, saved, debug):
             else:
                 contcode = CONTINENT_REGION_MAP[ioda_id]
 
-            if ts not in saved:
-                saved[ts] = []
+            if ts not in datadict:
+                datadict[ts] = []
 
             for metric, metric_value in all_metrics.items():
                 key = "%s.%s.%s.%s.%s" % (BASEKEY, contcode, 'region', ioda_id, metric)
                 key = key.encode()
 
                 if metric != 'city_count':
-                    saved[ts].append((key, int(10000000000 * metric_value)))
+                    datadict[ts].append((key, int(10000000000 * metric_value)))
                 else:
-                    saved[ts].append((key, int(metric_value)))
+                    datadict[ts].append((key, int(metric_value)))
     if debug:
-        print("data saved: ", saved)
+        print("data saved in datadict: ", datadict)
     return 1
 
 
@@ -246,7 +256,7 @@ def main(args):
             endtime - starttime < datetime.timedelta(days=DEFAULT_LOOKBACK_PERIOD)):
         starttime = endtime - datetime.timedelta(days=DEFAULT_LOOKBACK_PERIOD)
 
-    ret = fetchData(args.projectid, starttime, endtime, None, datadict, args.debug)
+    ret = fetchData(args.projectid, starttime, endtime, None, datadict, args.debug, args.savedata)
 
     if not args.debug:
         for ts, dat in sorted(datadict.items()):
@@ -283,6 +293,7 @@ if __name__ == "__main__":
     parser.add_argument("--endtime", type=int, help="Fetch traffic data up until the given Unix timestamp. \
                                                                   If not provided, defaults to the current time.")
     parser.add_argument("--debug", type=str, help="Enables debug mode for printing data.")
+    parser.add_argument("--savedata", type=str, help="Enables save mode for saving fetched Mozilla data with all metrics.")
 
     args = parser.parse_args()
 
