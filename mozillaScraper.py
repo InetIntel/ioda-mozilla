@@ -45,7 +45,7 @@ def fetchData(projectid, starttime, endtime, country_code, datadict, debug, save
         job = client.query(query)
         result_df = job.to_dataframe()
         if savedata:
-            save_filename = f'mozilla_data_{country_code}_start_{starttime}_end_{endtime}.csv'
+            save_filename = f'ioda-mozilla/data/mozilla_data_{country_code}_start_{starttime}_end_{endtime}.csv'
             result_df.to_csv(save_filename)
             print("mozilla data saved in: ", save_filename)
             return 0
