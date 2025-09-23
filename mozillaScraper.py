@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 
 import logging, datetime, time, argparse, requests
+import os
+
 import pandas as pd
 import _pytimeseries
 from google.cloud import bigquery
@@ -45,7 +47,9 @@ def fetchData(projectid, starttime, endtime, country_code, datadict, debug, save
         job = client.query(query)
         result_df = job.to_dataframe()
         if savedata:
-            save_filename = f'ioda-mozilla/data/mozilla_data_{country_code}_start_{starttime}_end_{endtime}.csv'
+            if not os.path.exists('data'):
+                os.makedirs('data')
+            save_filename = f'data/mozilla_data_{country_code}_start_{starttime}_end_{endtime}.csv'
             result_df.to_csv(save_filename)
             print("mozilla data saved in: ", save_filename)
             return 0
