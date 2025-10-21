@@ -195,8 +195,6 @@ def process_mozilla_df(mozilla_df):
     timestamps_with_data = mozilla_df['datetime'].unique()
     # get all countries (combination of NE mapping and countries in mozilla data)
     all_countries = sorted(set(NE_MAPPING['country'].dropna().unique()).union(mozilla_df['country'].unique()))
-    all_regions = sorted(set(NE_MAPPING['ioda_id'].dropna().unique()))
-
     country_agg_dict = add_city_count_to_missing(all_countries, country_agg_dict, timestamps_with_data)
 
     # region-aggregated data is trickier, we need to map and aggregate the data according to region code
@@ -213,16 +211,11 @@ def process_mozilla_df(mozilla_df):
     region_agg_df = (transform_list_data_and_add_city_count(city_col_debugging, region_agg_df)
                      .set_index(['datetime', 'ioda_id']).drop(['adjusted_city'], axis=1))
 
-    # batch according to timestamp, and store region data as values
-    region_batches = {timestamp: data.droplevel('datetime') for timestamp, data in region_agg_df.groupby('datetime')}
+    # create dictionary keyed by timestamp, and each value is a DataFrame indexed by regions
+    region_agg_dict = {timestamp: data.droplevel('datetime') for timestamp, data in region_agg_df.groupby('datetime')}
 
-    # region_agg_dict = {timestamp: region_batches[timestamp].to_dict(orient="index")
-    # if timestamp in region_batches
-    # else timestamp: {"city_count": 0}
-    # for timestamp in timestamps_with_data}
-
-    region_agg_dict = {timestamp: timestamp_agg_df.to_dict(orient="index")
-                       for timestamp, timestamp_agg_df in region_batches.items()}
+    all_regions = sorted(set(NE_MAPPING['ioda_id'].dropna().unique()))
+    region_agg_dict = add_city_count_to_missing(all_regions, region_agg_dict, timestamps_with_data)
 
     return country_agg_dict, region_agg_dict
 
@@ -231,7 +224,7 @@ def add_city_count_to_missing(all_locations, original_agg_dict, timestamps_with_
     processed_dict = {}
     for timestamp in timestamps_with_data:
         if timestamp in original_agg_dict:
-            # add all metrics if timestamp and country in mozilla data
+            # add all metrics if valid timestamp and country in mozilla data
             metrics_dict = original_agg_dict[timestamp].to_dict(orient="index")
             missing_locations = set(all_locations) - metrics_dict.keys()
             # add city count of 0 for all missing countries that are not in the mozilla data for that timestamp.
