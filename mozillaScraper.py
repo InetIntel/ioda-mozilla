@@ -175,7 +175,6 @@ def check_country_exists_mozilla(country_code):
 
 
 def process_mozilla_df(mozilla_df):
-    # we first process the existing data fetched from mozilla
     country_agg_df = mozilla_df.groupby(["datetime", "country"]).agg({
         "proportion_timeout": "mean",
         "proportion_unreachable": "mean",
@@ -188,14 +187,10 @@ def process_mozilla_df(mozilla_df):
     country_agg_df = (transform_list_data_and_add_city_count(city_col_debugging, country_agg_df)
                       .set_index(['datetime', 'country']).drop(['adjusted_city'], axis=1))
 
-    # create dictionary keyed by timestamp, and each value is a DataFrame indexed by country
-    country_agg_dict = {timestamp: data.droplevel('datetime') for timestamp, data in country_agg_df.groupby('datetime')}
+    country_batches = {timestamp: data.droplevel('datetime') for timestamp, data in country_agg_df.groupby('datetime')}
 
-    # get all unique timestamps
-    timestamps_with_data = mozilla_df['datetime'].unique()
-    # get all countries (combination of NE mapping and countries in mozilla data)
-    all_countries = sorted(set(NE_MAPPING['country'].dropna().unique()).union(mozilla_df['country'].unique()))
-    country_agg_dict = add_city_count_to_missing_locations(all_countries, country_agg_dict, timestamps_with_data)
+    country_agg_dict = {timestamp: timestamp_agg_df.to_dict(orient="index")
+                       for timestamp, timestamp_agg_df in country_batches.items()}
 
     # region-aggregated data is trickier, we need to map and aggregate the data according to region code
     # convert ioda_ids to ints. if not available, convert to NaN
@@ -211,31 +206,12 @@ def process_mozilla_df(mozilla_df):
     region_agg_df = (transform_list_data_and_add_city_count(city_col_debugging, region_agg_df)
                      .set_index(['datetime', 'ioda_id']).drop(['adjusted_city'], axis=1))
 
-    # create dictionary keyed by timestamp, and each value is a DataFrame indexed by regions
-    region_agg_dict = {timestamp: data.droplevel('datetime') for timestamp, data in region_agg_df.groupby('datetime')}
+    # batch according to timestamp, and store region data as values
+    region_batches = {timestamp: data.droplevel('datetime') for timestamp, data in region_agg_df.groupby('datetime')}
 
-    all_regions = sorted(set(NE_MAPPING['ioda_id'].dropna().unique()))
-    region_agg_dict = add_city_count_to_missing_locations(all_regions, region_agg_dict, timestamps_with_data)
-
+    region_agg_dict = {timestamp: timestamp_agg_df.to_dict(orient="index")
+                       for timestamp, timestamp_agg_df in region_batches.items()}
     return country_agg_dict, region_agg_dict
-
-
-def add_city_count_to_missing_locations(all_locations, original_agg_dict, timestamps_with_data):
-    processed_dict = {}
-    for timestamp in timestamps_with_data:
-        if timestamp in original_agg_dict:
-            # add all metrics if valid timestamp and country in mozilla data
-            metrics_dict = original_agg_dict[timestamp].to_dict(orient="index")
-            missing_locations = set(all_locations) - metrics_dict.keys()
-            # add city count of 0 for all missing countries that are not in the mozilla data for that timestamp.
-            if missing_locations:
-                metrics_dict.update({location: {'city_count': 0} for location in missing_locations})
-            metrics_dict = dict(sorted(metrics_dict.items()))
-            processed_dict[timestamp] = metrics_dict
-        else:
-            # if timestamp is missing, add city_count of 0 for all countries.
-            processed_dict[timestamp] = {location: {'city_count': 0} for location in all_locations}
-    return processed_dict
 
 
 def transform_list_data_and_add_city_count(cols, df):
