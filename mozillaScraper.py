@@ -18,7 +18,7 @@ NE_MAPPING['continent'] = NE_MAPPING['country'].map(CONTINENT_COUNTRY_MAP)
 CONTINENT_REGION_MAP = NE_MAPPING.dropna(subset=['ioda_id']).set_index('ioda_id')['continent'].to_dict()
 
 
-def fetchData(projectid, starttime, endtime, country_code, datadict, debug, savedata):
+def fetchData(projectid, starttime, endtime, datadict, debug, savedata):
     """
      Parameters:
           projectid -- the project ID for the project in Google Cloud Platform.
@@ -26,22 +26,12 @@ def fetchData(projectid, starttime, endtime, country_code, datadict, debug, save
                         Datetime object)
           end_time -- the end of the time period to query for (as a
                         Datetime object)
-          country_code -- the ISO 2-letter country code for the country to query for
-          saved -- the dictionary to save the fetched data into
+          datadict -- the dictionary to save the fetched data into
+          debug -- if not None, activate debug mode
+          savedata -- if not None, save all Mozilla data obtained from BigQuery
     """
     client = bigquery.Client(project=projectid)
-
-    if country_code:
-        try:
-            check_country_exists_mozilla(country_code)
-            query = get_query_string(starttime, endtime, country_code)
-        except Exception as e:
-            logging.error("Country %s not found in Mozilla Telemetry data." % (country_code))
-            return -1
-    else:
-        # no country specified, obtain data for all countries.
-        query = get_query_string(starttime, endtime)
-        country_code = "all"
+    query = get_query_string(starttime, endtime)
 
     try:
         job = client.query(query)
@@ -49,7 +39,7 @@ def fetchData(projectid, starttime, endtime, country_code, datadict, debug, save
         if savedata:
             if not os.path.exists('data'):
                 os.makedirs('data')
-            save_filename = f'data/mozilla_data_{country_code}_start_{starttime}_end_{endtime}.csv'
+            save_filename = f'data/mozilla_data_all_start_{starttime}_end_{endtime}.csv'
             result_df.to_csv(save_filename)
             print("mozilla data saved in: ", save_filename)
             return 0
@@ -61,10 +51,15 @@ def fetchData(projectid, starttime, endtime, country_code, datadict, debug, save
         logging.error("An unexpected error occurred from %s to %s: %s", str(starttime), str(endtime), str(e))
         return -1
 
-    time.sleep(0.1)
     if result_df.empty:
         logging.error("No telemetry data for from %s to %s.", str(starttime), str(endtime))
         return 0
+
+    mozilla_countries = result_df['country'].unique()
+    missing_countries = set(NE_MAPPING['country']) - set(mozilla_countries)
+    if missing_countries:
+        for country in missing_countries:
+            logging.error(f"Country {country} is not found in the Mozilla data.")
 
     fetched_country, fetched_region = process_mozilla_df(result_df)
 
@@ -131,7 +126,7 @@ def fetchData(projectid, starttime, endtime, country_code, datadict, debug, save
     return 1
 
 
-def get_query_string(start_time, end_time, country_code=None):
+def get_query_string(start_time, end_time):
     unknown_city_case = """
         CASE 
             WHEN city = 'unknown' AND (geo_subdivision1 IS NOT NULL AND geo_subdivision1 != '')
@@ -146,7 +141,7 @@ def get_query_string(start_time, end_time, country_code=None):
             ELSE city
         END AS adjusted_city
     """
-
+    # the base query obtains data for all countries, you can concatenate additional queries if you'd like to further filter the results.
     base_query = f"""
     SELECT *,
            {unknown_city_case}
@@ -154,24 +149,8 @@ def get_query_string(start_time, end_time, country_code=None):
     WHERE datetime BETWEEN TIMESTAMP('{start_time}') AND TIMESTAMP('{end_time}')
     """
 
-    if country_code:
-        return base_query + f"\nAND country = '{country_code}'"
+    return base_query
 
-    # query for all countries obtained from the IODA API call
-    response = requests.get(IODA_API_COUNTRY_ENTITY_QUERY)
-    if response.status_code == 200:
-        data = response.json()['data']
-        country_codes = [dictionary['code'] for dictionary in data]
-        ioda_countries = ", ".join(f'"{country}"' for country in country_codes)
-    else:
-        logging.error(f"IODA API Query Request to obtain all countries failed with status code {response.status_code}.")
-        return ""
-    return base_query + f"\nAND country in ({ioda_countries})"
-
-
-def check_country_exists_mozilla(country_code):
-    if not (NE_MAPPING['country'].isin([country_code]).any()):
-        raise ValueError(f"Country {country_code} is not found in the Mozilla data.")
 
 
 def process_mozilla_df(mozilla_df):
@@ -280,7 +259,7 @@ def main(args):
             endtime - starttime < datetime.timedelta(days=DEFAULT_LOOKBACK_PERIOD)):
         starttime = endtime - datetime.timedelta(days=DEFAULT_LOOKBACK_PERIOD)
 
-    ret = fetchData(args.projectid, starttime, endtime, None, datadict, args.debug, args.savedata)
+    ret = fetchData(args.projectid, starttime, endtime, datadict, args.debug, args.savedata)
 
     if not args.debug:
         for ts, dat in sorted(datadict.items()):
