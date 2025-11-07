@@ -4,7 +4,7 @@ import logging, datetime, time, argparse, requests
 import os
 
 import pandas as pd
-import _pytimeseries
+# import _pytimeseries
 from google.cloud import bigquery
 
 from constants import NE_MAP_PATH, DEFAULT_LOOKBACK_PERIOD, CONTINENT_COUNTRY_MAP, BASEKEY, MOZILLA_TABLE_NAME, \
@@ -31,7 +31,23 @@ def fetchData(projectid, starttime, endtime, datadict, debug, savedata):
           savedata -- if not None, save all Mozilla data obtained from BigQuery
     """
     client = bigquery.Client(project=projectid)
-    query = get_query_string(starttime, endtime)
+
+    # query for all countries obtained from the IODA API call
+    response = requests.get(IODA_API_COUNTRY_ENTITY_QUERY)
+    try:
+        response.raise_for_status()
+        data = response.json()['data']
+        ioda_countries = [dictionary['code'] for dictionary in data]
+
+    except requests.exceptions.HTTPError as e:
+        logging.error(
+            f"IODA API Query Request to obtain all countries failed with status code {response.status_code}: {response.text}")
+        return -1
+    except Exception as e:
+        logging.error(f"IODA API Query Request to obtain all countries failed with unexpected error: {str(e)}")
+        return -1
+
+    query = get_query_string(starttime, endtime, ioda_countries)
 
     try:
         job = client.query(query)
@@ -44,24 +60,17 @@ def fetchData(projectid, starttime, endtime, datadict, debug, savedata):
             print("mozilla data saved in: ", save_filename)
             return 0
     except bigquery.exceptions.BigQueryError as e:
-        logging.error("BigQueryError: Failed to get telemetry data from %s to %s: %s", str(starttime), str(endtime),
-                      str(e))
+        logging.error(f"BigQueryError: Failed to get telemetry data from {starttime} to {endtime}: {e}")
         return -1
     except Exception as e:
-        logging.error("An unexpected error occurred from %s to %s: %s", str(starttime), str(endtime), str(e))
+        logging.error(f"An unexpected error occurred from {starttime} to {endtime}: {e}")
         return -1
 
     if result_df.empty:
-        logging.error("No telemetry data for from %s to %s.", str(starttime), str(endtime))
+        logging.error(f"No telemetry data for from {starttime} to {endtime}.")
         return 0
 
-    mozilla_countries = result_df['country'].unique()
-    missing_countries = set(NE_MAPPING['country']) - set(mozilla_countries)
-    if missing_countries:
-        for country in missing_countries:
-            logging.error(f"Country {country} is not found in the Mozilla data.")
-
-    fetched_country, fetched_region = process_mozilla_df(result_df)
+    fetched_country, fetched_region = process_mozilla_df(result_df, ioda_countries)
 
     # pytimeseries works best if we write all datapoints for a given timestamp
     # in a single batch, so we will save our fetched data into a dictionary
@@ -99,7 +108,8 @@ def fetchData(projectid, starttime, endtime, datadict, debug, savedata):
                     datadict[ts].append((key, int(10000000000 * metric_value)))
                 else:
                     datadict[ts].append((key, int(metric_value)))
-
+    # print(datadict)
+    # print(ioda_countries)
     for timestamp, region_data in fetched_region.items():
         for ioda_id, all_metrics in region_data.items():
             ts = int(timestamp.timestamp())
@@ -126,7 +136,7 @@ def fetchData(projectid, starttime, endtime, datadict, debug, savedata):
     return 1
 
 
-def get_query_string(start_time, end_time):
+def get_query_string(start_time, end_time, ioda_countries):
     unknown_city_case = """
         CASE 
             WHEN city = 'unknown' AND (geo_subdivision1 IS NOT NULL AND geo_subdivision1 != '')
@@ -149,11 +159,12 @@ def get_query_string(start_time, end_time):
     WHERE datetime BETWEEN TIMESTAMP('{start_time}') AND TIMESTAMP('{end_time}')
     """
 
-    return base_query
+    ioda_countries_combined_string = ", ".join(f'"{country}"' for country in ioda_countries)
+
+    return base_query + f"\nAND country in ({ioda_countries_combined_string})"
 
 
-
-def process_mozilla_df(mozilla_df):
+def process_mozilla_df(mozilla_df, ioda_countries):
     # we first process the existing data fetched from mozilla
     country_agg_df = mozilla_df.groupby(["datetime", "country"]).agg({
         "proportion_timeout": "mean",
@@ -174,6 +185,7 @@ def process_mozilla_df(mozilla_df):
     timestamps_with_data = mozilla_df['datetime'].unique()
     # get all countries (combination of NE mapping and countries in mozilla data)
     all_countries = sorted(set(NE_MAPPING['country'].dropna().unique()).union(mozilla_df['country'].unique()))
+    # all_countries = sorted(set(ioda_countries).union(mozilla_df['country'].unique()))
     country_agg_dict = add_city_count_to_missing_locations(all_countries, country_agg_dict, timestamps_with_data)
 
     # region-aggregated data is trickier, we need to map and aggregate the data according to region code
@@ -227,20 +239,20 @@ def transform_list_data_and_add_city_count(cols, df):
 def main(args):
     datadict = {}
 
-    if not args.debug:
-        # Boiler-plate libtimeseries setup for a kafka output
-        pyts = _pytimeseries.Timeseries()
-        be = pyts.get_backend_by_name('kafka')
-        if not be:
-            logging.error('Unable to find pytimeseries kafka backend')
-            return -1
-        if not pyts.enable_backend(be, "-b %s -c %s -f ascii -p %s" % ( \
-                args.broker, args.channel, args.topicprefix)):
-            logging.error('Unable to initialise pytimeseries kafka backend')
-            return -1
-
-        kp = pyts.new_keypackage(reset=False, disable=True)
-        # Boiler-plate ends
+    # if not args.debug:
+        # # Boiler-plate libtimeseries setup for a kafka output
+        # pyts = _pytimeseries.Timeseries()
+        # be = pyts.get_backend_by_name('kafka')
+        # if not be:
+        #     logging.error('Unable to find pytimeseries kafka backend')
+        #     return -1
+        # if not pyts.enable_backend(be, "-b %s -c %s -f ascii -p %s" % ( \
+        #         args.broker, args.channel, args.topicprefix)):
+        #     logging.error('Unable to initialise pytimeseries kafka backend')
+        #     return -1
+        #
+        # kp = pyts.new_keypackage(reset=False, disable=True)
+        # # Boiler-plate ends
 
     # Determine the start and end time periods for our upcoming query
     if args.endtime:
@@ -261,25 +273,25 @@ def main(args):
 
     ret = fetchData(args.projectid, starttime, endtime, datadict, args.debug, args.savedata)
 
-    if not args.debug:
-        for ts, dat in sorted(datadict.items()):
-            # If our fetched time range was expanded out to a full day, now
-            # is a good time for us to ignore any time periods that the user
-            # didn't explicitly ask for
-            if args.starttime and ts < args.starttime:
-                continue
-
-            # pytimeseries code to save each key and value for this timestamp
-            for val in dat:
-                idx = kp.get_key(val[0])
-                if idx is None:
-                    idx = kp.add_key(val[0])
-                else:
-                    kp.enable_key(idx)
-                kp.set(idx, val[1])
-
-            # Write to the kafka queue
-            kp.flush(ts)
+    # if not args.debug:
+    #     for ts, dat in sorted(datadict.items()):
+    #         # If our fetched time range was expanded out to a full day, now
+    #         # is a good time for us to ignore any time periods that the user
+    #         # didn't explicitly ask for
+    #         if args.starttime and ts < args.starttime:
+    #             continue
+    #
+    #         # pytimeseries code to save each key and value for this timestamp
+    #         for val in dat:
+    #             idx = kp.get_key(val[0])
+    #             if idx is None:
+    #                 idx = kp.add_key(val[0])
+    #             else:
+    #                 kp.enable_key(idx)
+    #             kp.set(idx, val[1])
+    #
+    #         # Write to the kafka queue
+    #         kp.flush(ts)
     return
 
 
@@ -296,7 +308,8 @@ if __name__ == "__main__":
     parser.add_argument("--endtime", type=int, help="Fetch traffic data up until the given Unix timestamp. \
                                                                   If not provided, defaults to the current time.")
     parser.add_argument("--debug", type=str, help="Enables debug mode for printing data.")
-    parser.add_argument("--savedata", type=str, help="Enables save mode for saving fetched Mozilla data with all metrics.")
+    parser.add_argument("--savedata", type=str,
+                        help="Enables save mode for saving fetched Mozilla data with all metrics.")
 
     args = parser.parse_args()
 
