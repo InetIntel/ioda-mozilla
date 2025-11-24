@@ -4,7 +4,7 @@ import logging, datetime, time, argparse, requests
 import os
 
 import pandas as pd
-# import _pytimeseries
+import _pytimeseries
 from google.cloud import bigquery
 
 from constants import NE_MAP_PATH, DEFAULT_LOOKBACK_PERIOD, CONTINENT_COUNTRY_MAP, BASEKEY, MOZILLA_TABLE_NAME, \
@@ -47,7 +47,7 @@ def fetchData(projectid, starttime, endtime, datadict, debug, savedata):
         logging.error(f"IODA API Query Request to obtain all countries failed with unexpected error: {str(e)}")
         return -1
 
-    query = get_query_string(starttime, endtime, ioda_countries)
+    query = get_query_string(starttime, endtime)
 
     try:
         job = client.query(query)
@@ -108,8 +108,7 @@ def fetchData(projectid, starttime, endtime, datadict, debug, savedata):
                     datadict[ts].append((key, int(10000000000 * metric_value)))
                 else:
                     datadict[ts].append((key, int(metric_value)))
-    # print(datadict)
-    # print(ioda_countries)
+
     for timestamp, region_data in fetched_region.items():
         for ioda_id, all_metrics in region_data.items():
             ts = int(timestamp.timestamp())
@@ -136,7 +135,7 @@ def fetchData(projectid, starttime, endtime, datadict, debug, savedata):
     return 1
 
 
-def get_query_string(start_time, end_time, ioda_countries):
+def get_query_string(start_time, end_time):
     unknown_city_case = """
         CASE 
             WHEN city = 'unknown' AND (geo_subdivision1 IS NOT NULL AND geo_subdivision1 != '')
@@ -158,10 +157,8 @@ def get_query_string(start_time, end_time, ioda_countries):
     FROM {MOZILLA_TABLE_NAME}
     WHERE datetime BETWEEN TIMESTAMP('{start_time}') AND TIMESTAMP('{end_time}')
     """
-
-    ioda_countries_combined_string = ", ".join(f'"{country}"' for country in ioda_countries)
-
-    return base_query + f"\nAND country in ({ioda_countries_combined_string})"
+    # 8 nov: remove use of ioda countries from API, we want to keep all mozilla data.
+    return base_query
 
 
 def process_mozilla_df(mozilla_df, ioda_countries):
@@ -184,14 +181,21 @@ def process_mozilla_df(mozilla_df, ioda_countries):
     # get all unique timestamps
     timestamps_with_data = mozilla_df['datetime'].unique()
     # get all countries (combination of NE mapping and countries in mozilla data)
-    all_countries = sorted(set(NE_MAPPING['country'].dropna().unique()).union(mozilla_df['country'].unique()))
-    # all_countries = sorted(set(ioda_countries).union(mozilla_df['country'].unique()))
+    all_countries = sorted(set(ioda_countries).union(mozilla_df['country'].unique()))
     country_agg_dict = add_city_count_to_missing_locations(all_countries, country_agg_dict, timestamps_with_data)
 
     # region-aggregated data is trickier, we need to map and aggregate the data according to region code
     # convert ioda_ids to ints. if not available, convert to NaN
-    mozilla_with_ioda_id_df = mozilla_df.merge(NE_MAPPING,
-                                               on=['country', 'geo_subdivision1', 'geo_subdivision2'])
+    # 8 nov: add logging about how many unique countries/cities were dropped + number of rows (data in mozilla but not ioda)
+    # tbd: add in ioda region code to the NE mapping file for empty entries
+    mozilla_with_ioda_id_df = mozilla_df.merge(NE_MAPPING, on=['country', 'geo_subdivision1', 'geo_subdivision2'],
+                                               how="left", indicator=True)
+    # 25 nov: need to test.
+    dropped_rows = mozilla_with_ioda_id_df[mozilla_with_ioda_id_df['_merge'] == 'left_only']
+
+    logging.warning(f'Number of rows in Mozilla data where countries are not present in IODA: {len(dropped_rows)}')
+    logging.warning(f'Number of unique countries dropped: {dropped_rows["country"].nunique()}')
+    logging.warning(f'Number of unique cities dropped: {dropped_rows["city"].nunique()}')
 
     region_agg_df = mozilla_with_ioda_id_df.groupby(["datetime", "ioda_id"]).agg({
         "proportion_timeout": "mean",
@@ -239,20 +243,20 @@ def transform_list_data_and_add_city_count(cols, df):
 def main(args):
     datadict = {}
 
-    # if not args.debug:
-        # # Boiler-plate libtimeseries setup for a kafka output
-        # pyts = _pytimeseries.Timeseries()
-        # be = pyts.get_backend_by_name('kafka')
-        # if not be:
-        #     logging.error('Unable to find pytimeseries kafka backend')
-        #     return -1
-        # if not pyts.enable_backend(be, "-b %s -c %s -f ascii -p %s" % ( \
-        #         args.broker, args.channel, args.topicprefix)):
-        #     logging.error('Unable to initialise pytimeseries kafka backend')
-        #     return -1
-        #
-        # kp = pyts.new_keypackage(reset=False, disable=True)
-        # # Boiler-plate ends
+    if not args.debug:
+        # Boiler-plate libtimeseries setup for a kafka output
+        pyts = _pytimeseries.Timeseries()
+        be = pyts.get_backend_by_name('kafka')
+        if not be:
+            logging.error('Unable to find pytimeseries kafka backend')
+            return -1
+        if not pyts.enable_backend(be, "-b %s -c %s -f ascii -p %s" % ( \
+                args.broker, args.channel, args.topicprefix)):
+            logging.error('Unable to initialise pytimeseries kafka backend')
+            return -1
+
+        kp = pyts.new_keypackage(reset=False, disable=True)
+        # Boiler-plate ends
 
     # Determine the start and end time periods for our upcoming query
     if args.endtime:
@@ -273,25 +277,25 @@ def main(args):
 
     ret = fetchData(args.projectid, starttime, endtime, datadict, args.debug, args.savedata)
 
-    # if not args.debug:
-    #     for ts, dat in sorted(datadict.items()):
-    #         # If our fetched time range was expanded out to a full day, now
-    #         # is a good time for us to ignore any time periods that the user
-    #         # didn't explicitly ask for
-    #         if args.starttime and ts < args.starttime:
-    #             continue
-    #
-    #         # pytimeseries code to save each key and value for this timestamp
-    #         for val in dat:
-    #             idx = kp.get_key(val[0])
-    #             if idx is None:
-    #                 idx = kp.add_key(val[0])
-    #             else:
-    #                 kp.enable_key(idx)
-    #             kp.set(idx, val[1])
-    #
-    #         # Write to the kafka queue
-    #         kp.flush(ts)
+    if not args.debug:
+        for ts, dat in sorted(datadict.items()):
+            # If our fetched time range was expanded out to a full day, now
+            # is a good time for us to ignore any time periods that the user
+            # didn't explicitly ask for
+            if args.starttime and ts < args.starttime:
+                continue
+
+            # pytimeseries code to save each key and value for this timestamp
+            for val in dat:
+                idx = kp.get_key(val[0])
+                if idx is None:
+                    idx = kp.add_key(val[0])
+                else:
+                    kp.enable_key(idx)
+                kp.set(idx, val[1])
+
+            # Write to the kafka queue
+            kp.flush(ts)
     return
 
 
