@@ -75,12 +75,14 @@ echo "Topic $TOPIC_NAME created!"
 echo "Building Docker image for ioda-moz-staging..."
 docker build -f Dockerfile.test --platform=linux/amd64 --no-cache -t ioda-moz-staging . && \
 echo "Running ioda-moz-staging container..." && \
-docker run -d --platform=linux/amd64 --rm --network local_kafka_default --name ioda-moz-staging  \
+docker run -d --platform=linux/amd64 --network test_env_default --name ioda-moz-staging  \
 	-v "$HOME/.config/gcloud/application_default_credentials.json:/root/.config/gcloud/application_default_credentials.json" \
 	-e HOME=/root \
 	ioda-moz-staging --broker kafka:9092 --channel ${CHANNEL} \
 	--topicprefix ${TOPIC_PREFIX} --projectid MYPROJECTID && \
-echo "Mozilla data pulled and pushed to Kafka!"
+echo "Docker image ioda-moz-staging build and run complete, please check kafka_test if all data has been pushed."
 
-#echo "Earliest message pushed: "
-#docker exec -it kafka_test kafka-console-consumer.sh --bootstrap-server localhost:9092 --topic mytopicprefix.mychannel --from-beginning -max-messages=1
+echo "Latest message pushed: "
+docker exec -it kafka_test kafka-console-consumer.sh --bootstrap-server localhost:9092 --topic mytopicprefix.mychannel --offset 264 --partition 0
+
+echo "If messages displayed, please manually remove ioda-moz-staging container with the command: docker rm ioda-moz-staging"
