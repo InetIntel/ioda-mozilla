@@ -3,7 +3,7 @@
 HOSTNAME=`hostname`
 DOMAIN=`hostname -d`
 
-echo "Running docker compose startup script..."
+echo "Running Kafka & Zookeeper startup script..."
 docker compose -f kafka_setup.yml up -d 2>compose_error.log
 
 until docker compose -f kafka_setup.yml up -d 2>compose_error.log; do
@@ -56,7 +56,7 @@ until docker exec kafka_test kafka-topics.sh --bootstrap-server localhost:9092 -
     echo "Kafka & Zookeeper not ready yet, retrying after 5s..."
     sleep 5
 done
-echo "Kafka & Zookeper setup is complete!"
+echo "Kafka & Zookeper are ready!"
 
 TOPIC_PREFIX="mytopicprefix"
 CHANNEL="mychannel"
@@ -73,16 +73,14 @@ docker exec kafka_test kafka-topics.sh \
 echo "Topic $TOPIC_NAME created!"
 
 echo "Building Docker image for ioda-moz-staging..."
-docker build --platform=linux/amd64 --no-cache -t ioda-moz-staging .
-
-echo "Running ioda-moz-staging container..."
+docker build -f Dockerfile.test --platform=linux/amd64 --no-cache -t ioda-moz-staging . && \
+echo "Running ioda-moz-staging container..." && \
 docker run -d --platform=linux/amd64 --rm --network local_kafka_default --name ioda-moz-staging  \
 	-v "$HOME/.config/gcloud/application_default_credentials.json:/root/.config/gcloud/application_default_credentials.json" \
 	-e HOME=/root \
 	ioda-moz-staging --broker kafka:9092 --channel ${CHANNEL} \
-	--topicprefix ${TOPIC_PREFIX} --projectid MYPROJECTID
-
+	--topicprefix ${TOPIC_PREFIX} --projectid MYPROJECTID && \
 echo "Mozilla data pulled and pushed to Kafka!"
 
-# Use the following command to access data from Kafka
-# docker run --rm --network local_kafka_default bitnami/kafka:3.1 kafka-console-consumer.sh --bootstrap-server kafka:9092 --topic mytopicprefix.mychannel --from-beginning=false
+#echo "Earliest message pushed: "
+#docker exec -it kafka_test kafka-console-consumer.sh --bootstrap-server localhost:9092 --topic mytopicprefix.mychannel --from-beginning -max-messages=1
