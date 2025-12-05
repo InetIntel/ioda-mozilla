@@ -7,7 +7,7 @@ echo "Running Kafka & Zookeeper startup script..."
 docker compose -f kafka_setup.yml up -d 2>compose_error.log
 
 until docker compose -f kafka_setup.yml up -d 2>compose_error.log; do
-    echo "Kafka setup failed. Checking for port conflicts..."
+    echo "Encountered error during setup of Kafka & Zookeeper. Checking for port conflicts..."
 
     PORTS=(2181 9092)
     CONFLICT_FOUND=false
@@ -32,7 +32,7 @@ done
     fi
 done
 
-echo "Waiting for Kafka & Zookeeper to be ready..."
+echo "Conflicts resolved, starting up Kafka & Zookeeper..."
 
 until docker exec kafka_test kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1; do
     ZOOKEEPER_STATUS=$(docker ps --filter "name=zookeeper" --format "{{.Status}}")
@@ -56,7 +56,7 @@ until docker exec kafka_test kafka-topics.sh --bootstrap-server localhost:9092 -
     echo "Kafka & Zookeeper not ready yet, retrying after 5s..."
     sleep 5
 done
-echo "Kafka & Zookeper are ready!"
+echo "Kafka & Zookeper are up and ready!"
 
 TOPIC_PREFIX="mytopicprefix"
 CHANNEL="mychannel"
