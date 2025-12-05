@@ -32,7 +32,7 @@ done
     fi
 done
 
-echo "Conflicts resolved, starting up Kafka & Zookeeper..."
+echo "Starting up Kafka & Zookeeper..."
 
 until docker exec kafka_test kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1; do
     ZOOKEEPER_STATUS=$(docker ps --filter "name=zookeeper" --format "{{.Status}}")
@@ -80,9 +80,8 @@ docker run -d --platform=linux/amd64 --network test_env_default --name ioda-moz-
 	-e HOME=/root \
 	ioda-moz-staging --broker kafka:9092 --channel ${CHANNEL} \
 	--topicprefix ${TOPIC_PREFIX} --projectid MYPROJECTID && \
-echo "Docker image ioda-moz-staging build and run complete, please check kafka_test if all data has been pushed."
+echo "Docker image ioda-moz-staging build and run complete, now checking kafka_test to see if all data has been pushed."
 
-echo "Latest message pushed: "
-docker exec -it kafka_test kafka-console-consumer.sh --bootstrap-server localhost:9092 --topic mytopicprefix.mychannel --offset 264 --partition 0
-
+echo "Loading first message pushed:"
+docker exec -it kafka_test kafka-console-consumer.sh --bootstrap-server localhost:9092 --topic mytopicprefix.mychannel --from-beginning -max-messages=1
 echo "If messages displayed, please manually remove ioda-moz-staging container with the command: docker rm ioda-moz-staging"
