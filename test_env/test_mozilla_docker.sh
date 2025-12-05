@@ -3,33 +3,80 @@
 HOSTNAME=`hostname`
 DOMAIN=`hostname -d`
 
-echo "Starting Kafka and Zookeeper..."
-docker-compose -f kafka-setup.yml up -d
+echo "Running docker compose startup script..."
+docker compose -f kafka_setup.yml up -d 2>compose_error.log
 
-echo "Waiting for Kafka to be ready..."
-until docker run --rm --network $(docker network ls | grep local_kafka_default | awk '{print $1}') bitnami/kafka:3.1 \
-    kafka-topics.sh --list --bootstrap-server kafka:9092 >/dev/null 2>&1; do
-    echo "Kafka not ready yet, sleeping 5s..."
-    sleep 5
+until docker compose -f kafka_setup.yml up -d 2>compose_error.log; do
+    echo "Kafka setup failed. Checking for port conflicts..."
+
+    PORTS=(2181 9092)
+    CONFLICT_FOUND=false
+
+    for PORT in "${PORTS[@]}"; do
+    PIDS=$(lsof -t -i :"$PORT")
+    if [ -n "$PIDS" ]; then
+        echo "Port $PORT conflict detected. Killing processes..."
+        while read -r PID; do
+            [ -z "$PID" ] && continue
+            echo "Killing PID $PID on port $PORT..."
+            kill -9 "$PID"
+        done <<< "$PIDS"
+        CONFLICT_FOUND=true
+    fi
 done
 
-echo "Kafka setup is complete"
+    # If no conflicts were found for either port, assume Compose failed for another reason
+    if [ "$CONFLICT_FOUND" = false ]; then
+        echo "Docker Compose failed for another reason. Check compose_error.log"
+        exit 1
+    fi
+done
+
+echo "Waiting for Kafka & Zookeeper to be ready..."
+
+until docker exec kafka_test kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1; do
+    ZOOKEEPER_STATUS=$(docker ps --filter "name=zookeeper" --format "{{.Status}}")
+    KAFKA_STATUS=$(docker ps --filter "name=kafka" --format "{{.Status}}")
+
+    if [[ -n "$ZOOKEEPER_STATUS" && "$ZOOKEEPER_STATUS" == *"Up"* ]]; then
+        echo "Zookeeper is up: $ZOOKEEPER_STATUS"
+    else
+        echo "Zookeeper failed to start. Showing last logs:"
+        docker compose -f kafka_setup.yml logs zookeeper --tail=20
+    fi
+
+    if [[ -n "$KAFKA_STATUS" && "$KAFKA_STATUS" == *"Up"* ]]; then
+        echo "Kafka is up: $KAFKA_STATUS"
+    else
+        echo "Kafka failed to start. Showing last logs:"
+        docker compose -f kafka_setup.yml logs kafka --tail=20
+    fi
+
+    docker ps --filter "name=kafka" --filter "name=zookeeper" --format "table {{.Names}}\t{{.Status}}"
+    echo "Kafka & Zookeeper not ready yet, retrying after 5s..."
+    sleep 5
+done
+echo "Kafka & Zookeper setup is complete!"
 
 TOPIC_PREFIX="mytopicprefix"
 CHANNEL="mychannel"
 
-# 26 nov: rollback & check permissions
-echo "Creating topic ${TOPIC_PREFIX}.${CHANNEL}..."
-docker run --rm --network local_kafka_default bitnami/kafka:3.1 \
-  kafka-topics.sh --create --topic ${TOPIC_PREFIX}.${CHANNEL} \
-  --partitions 1 --replication-factor 1 \
-  --if-not-exists --bootstrap-server kafka:9092
+TOPIC_NAME="${TOPIC_PREFIX}.${CHANNEL}"
+echo "Creating topic $TOPIC_NAME..."
+docker exec kafka_test kafka-topics.sh \
+    --create \
+    --bootstrap-server localhost:9092 \
+    --replication-factor 1 \
+    --partitions 1 \
+    --topic "$TOPIC_NAME"
+
+echo "Topic $TOPIC_NAME created!"
 
 echo "Building Docker image for ioda-moz-staging..."
-docker build --no-cache -t ioda-moz-staging .
+docker build --platform=linux/amd64 --no-cache -t ioda-moz-staging .
 
 echo "Running ioda-moz-staging container..."
-docker run -d --rm --network local_kafka_default --name ioda-moz-staging  \
+docker run -d --platform=linux/amd64 --rm --network local_kafka_default --name ioda-moz-staging  \
 	-v "$HOME/.config/gcloud/application_default_credentials.json:/root/.config/gcloud/application_default_credentials.json" \
 	-e HOME=/root \
 	ioda-moz-staging --broker kafka:9092 --channel ${CHANNEL} \
