@@ -1,0 +1,33 @@
+
+# using ubuntu for easy installation of dependencies (pytimeseries, etc.)
+FROM ubuntu:focal
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get -y update && apt-get -y install apt-transport-https \
+               curl lsb-release gnupg git
+
+RUN curl -1sLf 'https://dl.cloudsmith.io/public/wand/libwandio/cfg/setup/bash.deb.sh' |  bash
+RUN echo "deb https://pkg.caida.org/os/ubuntu $(lsb_release -sc) main" | tee /etc/apt/sources.list.d/caida.list
+
+RUN curl -so /etc/apt/trusted.gpg.d/caida.gpg https://pkg.caida.org/os/ubuntu/keyring.gpg
+
+RUN apt-get -y update && apt-get -y install \
+	git \
+	libjpeg-dev \
+	python3.8 \
+	python-is-python3 \
+	python3-pip \
+	libtimeseries0 \
+	python3-pytimeseries \
+	zlib1g-dev
+	
+RUN git clone https://github.com/InetIntel/ioda-mozilla
+
+WORKDIR ioda-mozilla
+
+RUN pip3 install -r requirements.txt
+# make executable
+RUN chmod +x mozillaScraper.py
+ENTRYPOINT ["./mozillaScraper.py"]
+CMD ["--broker", "localhost:9092", "--channel", "mychannel", "--topicprefix", "mytopicprefix", "--projectid", "myproject"]
