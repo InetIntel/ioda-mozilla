@@ -18,7 +18,7 @@ NE_MAPPING['continent'] = NE_MAPPING['country'].map(CONTINENT_COUNTRY_MAP)
 CONTINENT_REGION_MAP = NE_MAPPING.dropna(subset=['ioda_id']).set_index('ioda_id')['continent'].to_dict()
 
 
-def fetchData(projectid, starttime, endtime, datadict, debug, savedata):
+def fetchData(projectid, starttime, endtime, datadict, preview, savelocalcsv):
     """
      Parameters:
           projectid -- the project ID for the project in Google Cloud Platform.
@@ -27,8 +27,8 @@ def fetchData(projectid, starttime, endtime, datadict, debug, savedata):
           end_time -- the end of the time period to query for (as a
                         Datetime object)
           datadict -- the dictionary to save the fetched data into
-          debug -- if not None, activate debug mode
-          savedata -- if not None, save all Mozilla data obtained from BigQuery
+          preview -- if not None, activate preview mode
+          savelocalcsv -- if not None, save all Mozilla data obtained from BigQuery into the local data/ folder as a csv file.
     """
     client = bigquery.Client(project=projectid)
 
@@ -52,7 +52,7 @@ def fetchData(projectid, starttime, endtime, datadict, debug, savedata):
     try:
         job = client.query(query)
         result_df = job.to_dataframe()
-        if savedata:
+        if savelocalcsv:
             if not os.path.exists('data'):
                 os.makedirs('data')
             save_filename = f'data/mozilla_data_all_start_{starttime}_end_{endtime}.csv'
@@ -130,7 +130,7 @@ def fetchData(projectid, starttime, endtime, datadict, debug, savedata):
                     datadict[ts].append((key, int(10000000000 * metric_value)))
                 else:
                     datadict[ts].append((key, int(metric_value)))
-    if debug:
+    if preview:
         print("data saved in datadict: ", datadict)
     return 1
 
@@ -157,7 +157,6 @@ def get_query_string(start_time, end_time):
     FROM {MOZILLA_TABLE_NAME}
     WHERE datetime BETWEEN TIMESTAMP('{start_time}') AND TIMESTAMP('{end_time}')
     """
-    # 8 nov: remove use of ioda countries from API, we want to keep all mozilla data.
     return base_query
 
 
@@ -187,13 +186,14 @@ def process_mozilla_df(mozilla_df, ioda_countries):
     # region-aggregated data is trickier, we need to map and aggregate the data according to region code
     # convert ioda_ids to ints. if not available, convert to NaN
     # 8 nov: add logging about how many unique countries/cities were dropped + number of rows (data in mozilla but not ioda)
-    # tbd: add in ioda region code to the NE mapping file for empty entries
+    # tbd: add in ioda region code to the NE mapping file for empty entries (for
     mozilla_with_ioda_id_df = mozilla_df.merge(NE_MAPPING, on=['country', 'geo_subdivision1', 'geo_subdivision2'],
                                                how="left", indicator=True)
     # 25 nov: need to test.
     dropped_rows = mozilla_with_ioda_id_df[mozilla_with_ioda_id_df['_merge'] == 'left_only']
 
     logging.warning(f'Number of rows in Mozilla data where countries are not present in IODA: {len(dropped_rows)}')
+    # 6/12: make a note of country codes being dropped from Mozilla (country in Mozilla that might not be in IODA)
     logging.warning(f'Number of unique countries dropped: {dropped_rows["country"].nunique()}')
     logging.warning(f'Number of unique cities dropped: {dropped_rows["city"].nunique()}')
 
@@ -243,7 +243,7 @@ def transform_list_data_and_add_city_count(cols, df):
 def main(args):
     datadict = {}
 
-    if not args.debug:
+    if not args.preview:
         # Boiler-plate libtimeseries setup for a kafka output
         pyts = _pytimeseries.Timeseries()
         be = pyts.get_backend_by_name('kafka')
@@ -275,9 +275,9 @@ def main(args):
             endtime - starttime < datetime.timedelta(days=DEFAULT_LOOKBACK_PERIOD)):
         starttime = endtime - datetime.timedelta(days=DEFAULT_LOOKBACK_PERIOD)
 
-    ret = fetchData(args.projectid, starttime, endtime, datadict, args.debug, args.savedata)
+    ret = fetchData(args.projectid, starttime, endtime, datadict, args.preview, args.savedata)
 
-    if not args.debug:
+    if not args.preview:
         for ts, dat in sorted(datadict.items()):
             # If our fetched time range was expanded out to a full day, now
             # is a good time for us to ignore any time periods that the user
@@ -311,9 +311,9 @@ if __name__ == "__main__":
                                                                     If not provided, defaults to 2 days before endtime.")
     parser.add_argument("--endtime", type=int, help="Fetch traffic data up until the given Unix timestamp. \
                                                                   If not provided, defaults to the current time.")
-    parser.add_argument("--debug", type=str, help="Enables debug mode for printing data.")
-    parser.add_argument("--savedata", type=str,
-                        help="Enables save mode for saving fetched Mozilla data with all metrics.")
+    parser.add_argument("--preview", type=str, help="Enables preview mode for printing data, without pushing data to Kafka.")
+    parser.add_argument("--savelocalcsv", type=str,
+                        help="Saves fetched Mozilla data (with all metrics) as a csv file in the local /data directory.")
 
     args = parser.parse_args()
 
