@@ -194,8 +194,8 @@ def process_mozilla_df(mozilla_df, ioda_countries):
 
     logging.warning(f'Number of rows in Mozilla data where countries are not present in IODA: {len(dropped_rows)}')
     # 6/12: make a note of country codes being dropped from Mozilla (country in Mozilla that might not be in IODA)
-    logging.warning(f'Number of unique countries dropped: {dropped_rows["country"].nunique()}')
-    logging.warning(f'Number of unique cities dropped: {dropped_rows["city"].nunique()}')
+    # logging.warning(f'Number of unique countries dropped: {dropped_rows["country"].nunique()}')
+    # logging.warning(f'Number of unique cities dropped: {dropped_rows["city"].nunique()}')
 
     region_agg_df = mozilla_with_ioda_id_df.groupby(["datetime", "ioda_id"]).agg({
         "proportion_timeout": "mean",
@@ -275,7 +275,7 @@ def main(args):
             endtime - starttime < datetime.timedelta(days=DEFAULT_LOOKBACK_PERIOD)):
         starttime = endtime - datetime.timedelta(days=DEFAULT_LOOKBACK_PERIOD)
 
-    ret = fetchData(args.projectid, starttime, endtime, datadict, args.preview, args.savedata)
+    ret = fetchData(args.projectid, starttime, endtime, datadict, args.preview, args.savelocalcsv)
 
     if not args.preview:
         for ts, dat in sorted(datadict.items()):
